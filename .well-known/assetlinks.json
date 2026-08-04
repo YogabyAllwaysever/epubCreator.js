@@ -1,8 +1,0 @@
-[{
-      "relation": ["delegate_permission/common.handle_all_urls"],
-      "target": {
-        "namespace": "android_app",
-        "package_name": "io.github.yogabyallwaysever.twa",
-        "sha256_cert_fingerprints": ["EC:AB:2E:36:D0:9E:71:72:A2:1C:FC:4E:BF:C6:E3:5F:97:F2:DC:DF:DE:B6:02:C7:DB:DC:23:98:43:89:6E:03"]
-      }
-    }]
