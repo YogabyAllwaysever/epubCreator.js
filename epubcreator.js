@@ -2,20 +2,22 @@
 /**
  * epubcreator.js — Node CLI untuk kompilasi direktori ke EPUB
  *
- * Versi: 2.5.0
+ * Versi: 2.6.0
  *
- *  Copyright (C} 2026 YogabyAllwaysever.
+ *  Copyright (C) 2026 YogabyAllwaysever.
  *
  * Cara pakai:
- *   node epubcreator.js createconfig   → buat config.txt template
- *   node epubcreator.js createchapter  → buat file bab .xhtml template (di EPUB/)
- *   node epubcreator.js createdir      → buat struktur direktori dan file template
- *   node epubcreator.js convertch      → ubah file .md menjadi .xhtml (output XHTML valid)
- *   node epubcreator.js convertchx     → ubah file .xhtml menjadi .md (kebalikan)
- *   node epubcreator.js build          → build EPUB dari direktori saat ini
- *   node epubcreator.js lang-id        → ubah bahasa ke Indonesia
- *   node epubcreator.js lang-en        → ubah bahasa ke English (US)
- *   node epubcreator.js --version      → tampilkan versi
+ *   node epubcreator.js createconfig        → buat config.txt template
+ *   node epubcreator.js createchapter       → buat file bab .xhtml template (di EPUB/)
+ *   node epubcreator.js createdir           → buat struktur direktori dan file template
+ *   node epubcreator.js convertch           → ubah file .md menjadi .xhtml (default)
+ *   node epubcreator.js convertch xhtml2md  → ubah file .xhtml menjadi .md
+ *   node epubcreator.js convertch docx2md   → ubah file .docx menjadi .md (pecah berdasarkan ##)
+ *   node epubcreator.js conv ...            → alias untuk convertch
+ *   node epubcreator.js build               → build EPUB dari direktori saat ini
+ *   node epubcreator.js lang-id             → ubah bahasa ke Indonesia
+ *   node epubcreator.js lang-en             → ubah bahasa ke English (US)
+ *   node epubcreator.js --version           → tampilkan versi
  *
  * Fitur ord.txt (opsional):
  *   - File di root buku, daftar urutan bab (satu baris satu nama file .xhtml)
@@ -23,7 +25,7 @@
  *   - Jika tidak ada, urutkan otomatis berdasarkan nama file (natural sort)
  */
 
-const VERSION = '2.5.0';
+const VERSION = '2.6.1';
 
 const fs = require('fs');
 const path = require('path');
@@ -55,7 +57,7 @@ const messages = {
     overwritten: '{file} ditimpa.',
     not_modified: '{file} tidak diubah.',
     created: '{file} dibuat.',
-    dir_created: 'Struktur direktori dibuat di {dir1} dan {dir2}',
+    dir_created: 'Struktur direktori dibuat di {dirs}',
     ready: '✅ Direktori dan file template siap.',
 
     // createchapter
@@ -64,7 +66,7 @@ const messages = {
     enter_title: 'Judul bab: ',
     chapter_created: 'Bab berhasil dibuat: {path}',
 
-    // convertch
+    // convertch (MD→XHTML)
     markdowns_not_found: 'Direktori Markdowns/ tidak ditemukan. Buat dengan "node epubcreator.js createdir"',
     path_not_found: 'Path tidak ditemukan: {path}',
     must_be_md: 'File harus berekstensi .md',
@@ -82,7 +84,7 @@ const messages = {
     invalid_path: 'Path bukan file atau direktori yang valid.',
     xhtml_already_exists: '{file} sudah ada. (Y) Timpa, (N) Copy ke Markdowns, (C) Cancel: ',
 
-    // convertchx
+    // convertch xhtml2md (dulu convertchx)
     epub_not_found: 'Direktori EPUB/ tidak ditemukan.',
     must_be_xhtml: 'File harus berekstensi .xhtml',
     skip_cover: 'Melewati file {file} (dikecualikan)',
@@ -91,6 +93,12 @@ const messages = {
     convertx_success: '✅ Berhasil mengonversi: {file}',
     convertx_fail: 'Gagal konversi {file}: {error}',
     convertx_summary: 'Selesai: {success} dari {total} file berhasil dikonversi.',
+
+    // convertch docx2md
+    docx_no_files: 'Tidak ditemukan file .docx.',
+    docx_processing: '📄 Memproses: {file}',
+    docx_no_images: 'ℹ️ Ekstraksi gambar dari DOCX belum didukung; gambar akan diabaikan.',
+    docx_heading_mode_warn: '⚠️ Mode ukuran font untuk heading belum stabil; disarankan menggunakan style Word.',
 
     // build
     config_not_found: 'config.txt tidak ditemukan! Jalankan: node epubcreator.js createconfig',
@@ -113,20 +121,23 @@ const messages = {
     // Help
     help_title: '📚 epubcreator — CLI untuk kompilasi direktori ke EPUB  (v{version})',
     help_commands: `
-  node epubcreator.js createconfig    Buat config.txt template
-  node epubcreator.js createchapter   Buat file bab .xhtml template
-  node epubcreator.js createdir       Buat struktur direktori dan file template
-  node epubcreator.js convertch       Ubah file .md menjadi .xhtml (output XHTML valid)
-  node epubcreator.js convertchx      Ubah file .xhtml menjadi .md (kebalikan)
-  node epubcreator.js build           Build EPUB dari direktori saat ini
-  node epubcreator.js lang-id         Ubah bahasa ke Indonesia
-  node epubcreator.js lang-en         Ubah bahasa ke English (US)
-  node epubcreator.js --version       Tampilkan versi`,
+  node epubcreator.js createconfig        Buat config.txt template
+  node epubcreator.js createchapter       Buat file bab .xhtml template
+  node epubcreator.js createdir           Buat struktur direktori dan file template
+  node epubcreator.js convertch           Ubah .md → .xhtml (default, cari di Markdowns/)
+  node epubcreator.js convertch xhtml2md  Ubah .xhtml → .md
+  node epubcreator.js convertch docx2md   Ubah .docx → .md (pecah berdasarkan ##)
+  node epubcreator.js conv ...            Alias untuk convertch
+  node epubcreator.js build               Build EPUB dari direktori saat ini
+  node epubcreator.js lang-id             Ubah bahasa ke Indonesia
+  node epubcreator.js lang-en             Ubah bahasa ke English (US)
+  node epubcreator.js --version           Tampilkan versi`,
     help_structure: `
 Struktur direktori:
   ./
   ├── config.txt          ← metadata buku (wajib)
   ├── ord.txt             ← daftar urutan bab (opsional)
+  ├── Docs/               ← tempat file .docx sumber (untuk docx2md)
   ├── Markdowns/          ← tempat file .md sumber (untuk convertch)
   ├── EPUB/
   │   ├── images/
@@ -137,8 +148,9 @@ Struktur direktori:
   └── builds/
       └── [nama-folder].epub   ← hasil build`,
     help_deps: `
-Catatan: pastikan sudah install dependensi:
-  npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4`,
+Catatan: pastikan sudah install dependensi utama:
+  npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4
+Untuk fitur DOCX:  npm install mammoth@1.6.0 (opsional)`,
   },
 
   en: {
@@ -161,7 +173,7 @@ Catatan: pastikan sudah install dependensi:
     overwritten: '{file} overwritten.',
     not_modified: '{file} unchanged.',
     created: '{file} created.',
-    dir_created: 'Directory structure created at {dir1} and {dir2}',
+    dir_created: 'Directory structure created at {dirs}',
     ready: '✅ Directory and template files ready.',
 
     // createchapter
@@ -170,7 +182,7 @@ Catatan: pastikan sudah install dependensi:
     enter_title: 'Chapter title: ',
     chapter_created: 'Chapter created: {path}',
 
-    // convertch
+    // convertch (MD→XHTML)
     markdowns_not_found: 'Markdowns/ directory not found. Create with "node epubcreator.js createdir"',
     path_not_found: 'Path not found: {path}',
     must_be_md: 'File must have .md extension',
@@ -188,7 +200,7 @@ Catatan: pastikan sudah install dependensi:
     invalid_path: 'Path is not a valid file or directory.',
     xhtml_already_exists: '{file} already exists. (Y) Overwrite, (N) Copy to Markdowns, (C) Cancel: ',
 
-    // convertchx
+    // convertch xhtml2md
     epub_not_found: 'EPUB/ directory not found.',
     must_be_xhtml: 'File must have .xhtml extension',
     skip_cover: 'Skipping {file} (excluded)',
@@ -197,6 +209,12 @@ Catatan: pastikan sudah install dependensi:
     convertx_success: '✅ Successfully converted: {file}',
     convertx_fail: 'Failed to convert {file}: {error}',
     convertx_summary: 'Done: {success} out of {total} files converted successfully.',
+
+    // convertch docx2md
+    docx_no_files: 'No .docx files found.',
+    docx_processing: '📄 Processing: {file}',
+    docx_no_images: 'ℹ️ Image extraction from DOCX not yet supported; images will be ignored.',
+    docx_heading_mode_warn: '⚠️ Font size based heading mode is unstable; using Word styles is recommended.',
 
     // build
     config_not_found: 'config.txt not found! Run: node epubcreator.js createconfig',
@@ -219,20 +237,23 @@ Catatan: pastikan sudah install dependensi:
     // Help
     help_title: '📚 epubcreator — CLI for compiling directory to EPUB  (v{version})',
     help_commands: `
-  node epubcreator.js createconfig    Create config.txt template
-  node epubcreator.js createchapter   Create chapter .xhtml template file
-  node epubcreator.js createdir       Create directory structure and template files
-  node epubcreator.js convertch       Convert .md files to .xhtml (valid XHTML output)
-  node epubcreator.js convertchx      Convert .xhtml files to .md (reverse)
-  node epubcreator.js build           Build EPUB from current directory
-  node epubcreator.js lang-id         Switch language to Indonesian
-  node epubcreator.js lang-en         Switch language to English (US)
-  node epubcreator.js --version       Show version`,
+  node epubcreator.js createconfig        Create config.txt template
+  node epubcreator.js createchapter       Create chapter .xhtml template file
+  node epubcreator.js createdir           Create directory structure and template files
+  node epubcreator.js convertch           Convert .md → .xhtml (default, looks in Markdowns/)
+  node epubcreator.js convertch xhtml2md  Convert .xhtml → .md
+  node epubcreator.js convertch docx2md   Convert .docx → .md (split by ##)
+  node epubcreator.js conv ...            Alias for convertch
+  node epubcreator.js build               Build EPUB from current directory
+  node epubcreator.js lang-id             Switch language to Indonesian
+  node epubcreator.js lang-en             Switch language to English (US)
+  node epubcreator.js --version           Show version`,
     help_structure: `
 Directory structure:
   ./
   ├── config.txt          ← book metadata (required)
   ├── ord.txt             ← chapter order list (optional)
+  ├── Docs/               ← source .docx files (for docx2md)
   ├── Markdowns/          ← source .md files (for convertch)
   ├── EPUB/
   │   ├── images/
@@ -243,8 +264,9 @@ Directory structure:
   └── builds/
       └── [folder-name].epub   ← build result`,
     help_deps: `
-Note: make sure dependencies are installed:
-  npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4`,
+Note: make sure main dependencies are installed:
+  npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4
+For DOCX feature:  npm install mammoth@1.6.0 (optional)`,
   }
 };
 
@@ -431,6 +453,78 @@ function createXhtmlRenderer(marked) {
   return renderer;
 }
 
+// ─── Baca mapping DOCX dari config ─────────────────────────────────
+function readDocxMapping() {
+  const configPath = path.join(process.cwd(), 'config.txt');
+  if (!fs.existsSync(configPath)) return null;
+
+  const content = fs.readFileSync(configPath, 'utf8');
+  const lines = content.split('\n');
+  let inSection = false;
+  const mapping = {};
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      inSection = (trimmed === '[docx-mapping]');
+      continue;
+    }
+    if (inSection && trimmed && !trimmed.startsWith('#')) {
+      const idx = trimmed.indexOf('=');
+      if (idx > 0) {
+        const key = trimmed.slice(0, idx).trim();
+        const val = trimmed.slice(idx + 1).trim();
+        if (key === 'heading1' || key === 'heading2' || key === 'heading3') {
+          mapping[key] = parseFloat(val);
+        }
+      }
+    }
+  }
+
+  return Object.keys(mapping).length > 0 ? mapping : null;
+}
+
+// ─── Sesuaikan heading berdasarkan mapping ──────────────────────────
+function adjustHeadings(html, mapping) {
+  // Jika tidak ada mapping, gunakan class style dari Word
+  if (!mapping) {
+    // Ganti class heading1/2/3 menjadi h1/h2/h3
+    html = html.replace(/<p\s+class="heading1"[^>]*>/gi, '<h1>');
+    html = html.replace(/<p\s+class="heading2"[^>]*>/gi, '<h2>');
+    html = html.replace(/<p\s+class="heading3"[^>]*>/gi, '<h3>');
+    // Penutup: ubah </p> menjadi </h1/h2/h3> secara kasar, tapi kita biarkan turndown menangani.
+    return html;
+  }
+
+  // Mode ukuran: parsing style font-size
+  const thresholds = [
+    { level: 1, size: mapping.heading1 || 24 },
+    { level: 2, size: mapping.heading2 || 18 },
+    { level: 3, size: mapping.heading3 || 14 }
+  ].sort((a, b) => b.size - a.size);
+
+  // Kita gunakan regex untuk mengganti <p> yang memiliki style font-size
+  const pRegex = /<p\s+([^>]*style="[^"]*font-size:(\d+)pt[^"]*"[^>]*)>/gi;
+  let modified = html;
+  let match;
+  while ((match = pRegex.exec(html)) !== null) {
+    const full = match[0];
+    const size = parseInt(match[2]);
+    let level = 0;
+    for (const th of thresholds) {
+      if (size >= th.size) { level = th.level; break; }
+    }
+    if (level > 0) {
+      // Ganti tag pembuka
+      modified = modified.replace(full, `<h${level}>`);
+      // Kita tidak bisa ganti penutup dengan akurat, jadi biarkan saja.
+    }
+  }
+
+  logI18n('docx_heading_mode_warn', {}, 'warn');
+  return modified;
+}
+
 // ─── Command: createconfig ─────────────────────────────────────────────
 async function cmdCreateConfig() {
   const configPath = path.join(process.cwd(), 'config.txt');
@@ -491,11 +585,23 @@ contributors:
 extra_titles: 
 
 # ============================================================
+#  KONVERSI DOCX → MARKDOWN (opsional)
+# ============================================================
+# [docx-mapping]
+# Jika bagian ini ada, konversi akan menggunakan ukuran font (dalam pt)
+# Jika tidak ada, akan menggunakan style Word (Heading 1, Heading 2, dll.)
+# heading1 = 24
+# heading2 = 18
+# heading3 = 14
+
+# ============================================================
 #  STRUKTUR DIREKTORI YANG DIPERLUKAN SAAT BUILD:
 #
 #   ./
 #   ├── config.txt
 #   ├── ord.txt          ← opsional, daftar urutan bab (satu baris satu .xhtml)
+#   ├── Docs/            ← tempat file .docx sumber (untuk docx2md)
+#   ├── Markdowns/       ← tempat file .md sumber (untuk convertch)
 #   └── EPUB/
 #       ├── images/
 #       │   └── cover.png   ← WAJIB ada
@@ -564,6 +670,7 @@ async function cmdCreateDir() {
   const imagesDir = path.join(epubDir, 'images');
   const audioDir = path.join(epubDir, 'audiovideo');
   const markdownsDir = path.join(cwd, 'Markdowns');
+  const docsDir = path.join(cwd, 'Docs');
   const configPath = path.join(cwd, 'config.txt');
   const ordPath = path.join(cwd, 'ord.txt');
 
@@ -571,7 +678,10 @@ async function cmdCreateDir() {
   ensureDir(imagesDir);
   ensureDir(audioDir);
   ensureDir(markdownsDir);
-  logI18n('dir_created', { dir1: epubDir, dir2: markdownsDir }, 'info');
+  ensureDir(docsDir);
+
+  const dirs = [epubDir, markdownsDir, docsDir].join(', ');
+  logI18n('dir_created', { dirs }, 'info');
 
   // Buat config.txt
   if (fs.existsSync(configPath)) {
@@ -625,16 +735,29 @@ contributors:
 extra_titles: 
 
 # ============================================================
+#  KONVERSI DOCX → MARKDOWN (opsional)
+# ============================================================
+# [docx-mapping]
+# Jika bagian ini ada, konversi akan menggunakan ukuran font (dalam pt)
+# Jika tidak ada, akan menggunakan style Word (Heading 1, Heading 2, dll.)
+# heading1 = 24
+# heading2 = 18
+# heading3 = 14
+
+# ============================================================
 #  STRUKTUR DIREKTORI YANG DIPERLUKAN SAAT BUILD:
 #
 #   ./
 #   ├── config.txt
 #   ├── ord.txt          ← opsional, daftar urutan bab (satu baris satu .xhtml)
+#   ├── Docs/            ← tempat file .docx sumber (untuk docx2md)
+#   ├── Markdowns/       ← tempat file .md sumber (untuk convertch)
 #   └── EPUB/
 #       ├── images/
 #       │   └── cover.png   ← WAJIB ada
 #       ├── audiovideo/     ← opsional
 #       ├── bab1.xhtml      ← bab-bab (bisa nama apa saja, asal di root EPUB/)
+#       ├── bab2.xhtml
 #       └── ...
 #
 #  Jalankan:  node epubcreator.js build
@@ -694,16 +817,29 @@ contributors:
 extra_titles: 
 
 # ============================================================
+#  KONVERSI DOCX → MARKDOWN (opsional)
+# ============================================================
+# [docx-mapping]
+# Jika bagian ini ada, konversi akan menggunakan ukuran font (dalam pt)
+# Jika tidak ada, akan menggunakan style Word (Heading 1, Heading 2, dll.)
+# heading1 = 24
+# heading2 = 18
+# heading3 = 14
+
+# ============================================================
 #  STRUKTUR DIREKTORI YANG DIPERLUKAN SAAT BUILD:
 #
 #   ./
 #   ├── config.txt
 #   ├── ord.txt          ← opsional, daftar urutan bab (satu baris satu .xhtml)
+#   ├── Docs/            ← tempat file .docx sumber (untuk docx2md)
+#   ├── Markdowns/       ← tempat file .md sumber (untuk convertch)
 #   └── EPUB/
 #       ├── images/
 #       │   └── cover.png   ← WAJIB ada
 #       ├── audiovideo/     ← opsional
 #       ├── bab1.xhtml      ← bab-bab (bisa nama apa saja, asal di root EPUB/)
+#       ├── bab2.xhtml
 #       └── ...
 #
 #  Jalankan:  node epubcreator.js build
@@ -800,7 +936,7 @@ async function convertOneMdFile(mdFile, outputDir, force = false, marked) {
   return true;
 }
 
-// ─── Command: convertch ────────────────────────────────────────────────
+// ─── Command: MD → XHTML (perilaku lama convertch) ────────────────────
 async function cmdConvertCh(filePath, force = false, marked) {
   let target;
   if (!filePath) {
@@ -928,7 +1064,7 @@ function convertOneXhtmlFile(xhtmlFile, outputDir, TurndownService) {
   return true;
 }
 
-// ─── Command: convertchx ───────────────────────────────────────────────
+// ─── Command: XHTML → MD (xhtml2md) ───────────────────────────────────
 async function cmdConvertX(filePath, TurndownService) {
   let target;
   if (!filePath) {
@@ -992,6 +1128,139 @@ async function cmdConvertX(filePath, TurndownService) {
   }
 
   logI18n('invalid_path', {}, 'error');
+  rl.close();
+}
+
+// ─── Command: DOCX → MD (docx2md) ──────────────────────────────────
+async function cmdDocxToMd(argv) {
+  // Parse argumen
+  let input = './Docs';
+  let output = './Markdowns/fromdocx';
+  let force = false;
+  let noImages = false;
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--force' || arg === '-f') force = true;
+    else if (arg === '--no-images') noImages = true;
+    else if (arg === '--output' && i + 1 < argv.length) {
+      output = argv[i + 1];
+      i++; // skip next
+    } else if (!arg.startsWith('--')) {
+      input = arg;
+    }
+  }
+
+  // Cek mammoth
+  let mammoth;
+  try {
+    mammoth = require('mammoth');
+  } catch (_) {
+    logI18n('missing_dep', { mod: 'mammoth', version: '1.6.0' }, 'error');
+    log('Install dengan: npm install mammoth@1.6.0', 'info');
+    rl.close();
+    return;
+  }
+
+  // Baca mapping dari config
+  const mapping = readDocxMapping();
+
+  // Tentukan file .docx
+  const inputPath = path.resolve(process.cwd(), input);
+  let docxFiles = [];
+  if (fs.existsSync(inputPath)) {
+    const stat = fs.statSync(inputPath);
+    if (stat.isFile() && inputPath.toLowerCase().endsWith('.docx')) {
+      docxFiles.push(inputPath);
+    } else if (stat.isDirectory()) {
+      const files = fs.readdirSync(inputPath);
+      for (const f of files) {
+        const full = path.join(inputPath, f);
+        if (fs.statSync(full).isFile() && f.toLowerCase().endsWith('.docx')) {
+          docxFiles.push(full);
+        }
+      }
+    } else {
+      logI18n('invalid_path', { path: inputPath }, 'error');
+      rl.close();
+      return;
+    }
+  } else {
+    logI18n('path_not_found', { path: inputPath }, 'error');
+    rl.close();
+    return;
+  }
+
+  if (docxFiles.length === 0) {
+    log(t('docx_no_files'), 'warn');
+    rl.close();
+    return;
+  }
+
+  // Proses setiap file
+  const isMultiple = docxFiles.length > 1;
+  for (const docxFile of docxFiles) {
+    const baseName = path.basename(docxFile, '.docx');
+    let outDir;
+    if (isMultiple) {
+      outDir = path.join(output, baseName);
+    } else {
+      outDir = output;
+    }
+    ensureDir(outDir);
+
+    logI18n('docx_processing', { file: path.basename(docxFile) }, 'info');
+
+    try {
+      // Konversi ke HTML dengan mammoth
+      const result = await mammoth.convertToHtml({ path: docxFile });
+      let html = result.value;
+
+      // Perbaiki heading berdasarkan mapping
+      const modifiedHtml = adjustHeadings(html, mapping);
+
+      // Konversi ke Markdown
+      const TurndownService = require('turndown');
+      const turndownService = new TurndownService({
+        headingStyle: 'atx',
+        codeBlockStyle: 'fenced',
+        bulletListMarker: '-',
+        emDelimiter: '*',
+        strongDelimiter: '**',
+      });
+      let markdown = turndownService.turndown(modifiedHtml);
+
+      // Pecah berdasarkan ##
+      const parts = markdown.split(/(?=^##\s+)/m).filter(p => p.trim() !== '');
+      if (parts.length === 0) {
+        parts.push(markdown);
+      }
+
+      // Tulis file p-*.md
+      for (let i = 0; i < parts.length; i++) {
+        const content = parts[i];
+        const num = i + 1;
+        const mdPath = path.join(outDir, `p-${num}.md`);
+        if (fs.existsSync(mdPath) && !force) {
+          const ans = await question(t('file_exists', { file: path.basename(mdPath) }));
+          if (ans.toLowerCase() !== 'y') {
+            logI18n('skip_file', { file: path.basename(mdPath) }, 'warn');
+            continue;
+          }
+        }
+        fs.writeFileSync(mdPath, content, 'utf8');
+        logI18n('created', { file: mdPath }, 'success');
+      }
+
+      if (!noImages) {
+        logI18n('docx_no_images', {}, 'warn');
+      }
+    } catch (err) {
+      logI18n('convert_fail', { file: path.basename(docxFile), error: err.message }, 'error');
+    }
+  }
+
+  log('✅ Selesai.', 'success');
   rl.close();
 }
 
@@ -1476,17 +1745,7 @@ async function main() {
     return;
   }
 
-  // 3. Cek dependensi (setelah bahasa)
-  let deps;
-  try {
-    deps = checkDependencies();
-  } catch (_) {
-    // checkDependencies sudah exit jika gagal
-    process.exit(1);
-  }
-  const { archiver, marked, TurndownService } = deps;
-
-  // 4. Proses command lainnya
+  // 3. Perintah --version / help (tanpa dependensi)
   if (command === '--version' || command === '-v') {
     console.log(`epubcreator v${VERSION}`);
     rl.close();
@@ -1502,6 +1761,64 @@ async function main() {
     return;
   }
 
+  // 4. Perintah convertch / conv (dengan sub-perintah)
+  if (command === 'convertch' || command === 'conv') {
+    // Cek dependensi dasar (selain mammoth)
+    let deps;
+    try {
+      deps = checkDependencies();
+    } catch (_) {
+      process.exit(1);
+    }
+    const { marked, TurndownService } = deps;
+
+    const sub = args[1] || 'md2xhtml'; // default sub-perintah
+    const rest = args.slice(2);
+
+    // Jika sub-perintah adalah 'md2xhtml' atau tidak dikenali, anggap md2xhtml
+    if (sub === 'md2xhtml' || (sub !== 'xhtml2md' && sub !== 'docx2md')) {
+      // Mode MD → XHTML
+      const argPath = (sub === 'md2xhtml') ? rest[0] : args[1]; // jika sub tidak dikenali, arg pertama adalah path
+      const force = rest.includes('--force') || rest.includes('-f');
+      await cmdConvertCh(argPath, force, marked);
+    } else if (sub === 'xhtml2md') {
+      // Mode XHTML → MD
+      const argPath = rest[0];
+      await cmdConvertX(argPath, TurndownService);
+    } else if (sub === 'docx2md') {
+      // Mode DOCX → MD
+      await cmdDocxToMd(rest);
+    } else {
+      logI18n('unknown_command', { cmd: sub }, 'error');
+      logI18n('usage_hint', {}, 'info');
+      rl.close();
+    }
+    return;
+  }
+
+  // 5. Perintah convertchx (alias untuk xhtml2md, untuk kompatibilitas)
+  if (command === 'convertchx') {
+    let deps;
+    try {
+      deps = checkDependencies();
+    } catch (_) {
+      process.exit(1);
+    }
+    const { TurndownService } = deps;
+    const argPath = args[1];
+    await cmdConvertX(argPath, TurndownService);
+    return;
+  }
+
+  // 6. Perintah lain (butuh dependensi)
+  let deps;
+  try {
+    deps = checkDependencies();
+  } catch (_) {
+    process.exit(1);
+  }
+  const { archiver, marked, TurndownService } = deps;
+
   switch (command) {
     case 'createconfig':
       await cmdCreateConfig();
@@ -1512,17 +1829,6 @@ async function main() {
     case 'createdir':
       await cmdCreateDir();
       break;
-    case 'convertch': {
-      const argPath = args[1];
-      const force = args.includes('--force') || args.includes('-f');
-      await cmdConvertCh(argPath, force, marked);
-      break;
-    }
-    case 'convertchx': {
-      const argPath = args[1];
-      await cmdConvertX(argPath, TurndownService);
-      break;
-    }
     case 'build':
       await cmdBuild(archiver);
       break;
