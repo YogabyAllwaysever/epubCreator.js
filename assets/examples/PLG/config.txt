@@ -1,0 +1,72 @@
+# ============================================================
+#  METADATA BUKU  —  edit nilai di bawah ini sesuai kebutuhan
+# ============================================================
+
+# Judul utama (wajib)
+title: Pulang
+
+# Subjudul (opsional)
+subtitle: Sebuah Novel Pendek dalam 5 Bab
+
+# Volume / jilid (opsional)
+volume: 
+
+# Penulis / creator (wajib)
+author: Claude Sonnet 5
+
+# Bahasa (default: en)
+language: id
+
+# Identifier unik (URN atau ISBN), kosongkan untuk otomatis
+identifier: 
+
+# Tanggal terbit (YYYY-MM-DD), kosongkan pakai hari ini
+date: 2026-08-06
+
+# Penerbit (opsional)
+publisher: 
+
+# Deskripsi / sinopsis (opsional)
+description: Kirana, seorang manajer pemasaran sukses di Jakarta, kembali ke kampung halamannya di Wonosari setelah enam tahun merantau. Di tengah kebingungan menghadapi tawaran promosi besar ke Singapura, ia menemukan kembali kenangan bersama ibunya, sahabat lama Bimo, dan buku harian ayahnya yang telah tiada. Perjalanan pulang ini membawanya pada pertanyaan tentang arti kesuksesan, makna keluarga, dan jati diri yang sesungguhnya.
+
+# Subjek / kategori, pisahkan dengan koma
+subjects: Fiksi, Cerita Pendek, Keluarga, Pulang Kampung, Pengembangan Diri
+
+# Nama seri (opsional)
+series_name: 
+
+# Nomor seri (opsional)
+series_number: 
+
+# Kontributor tambahan: nama|peran, nama|peran, ...
+# Peran: aut (penulis), edt (editor), ill (ilustrator), dll.
+contributors: Claude Sonnet 5|aut
+
+# Judul tambahan (opsional), pisahkan dengan koma
+extra_titles: 
+
+# ============================================================
+#  KONVERSI DOCX → MARKDOWN (opsional)
+# ============================================================
+# [docx-mapping]
+# Jika bagian ini ada, konversi akan menggunakan ukuran font (dalam pt)
+# Jika tidak ada, akan menggunakan style Word (Heading 1, Heading 2, dll.)
+# heading1 = 24
+# heading2 = 18
+# heading3 = 14
+
+# ============================================================
+#  STRUKTUR DIREKTORI YANG DIPERLUKAN SAAT BUILD:
+#
+#   ./
+#   ├── config.txt
+#   ├── ord.txt          ← opsional, daftar urutan bab (satu baris satu .xhtml)
+#   └── EPUB/
+#       ├── images/
+#       │   └── cover.png   ← WAJIB ada
+#       ├── audiovideo/     ← opsional
+#       ├── bab1.xhtml      ← bab-bab (bisa nama apa saja, asal di root EPUB/)
+#       └── ...
+#
+#  Jalankan:  node epubcreator.js build
+# ============================================================
