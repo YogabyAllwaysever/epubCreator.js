@@ -1570,7 +1570,7 @@ function generateCoverXhtml(coverFilename) {
   <meta name="viewport" content="width=device-width, height=device-height" />
 </head>
 <body style="margin-top: 0px; margin-left: 0px; margin-right: 0px; margin-bottom: 0px;">
-    <svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100%" height="100%" viewBox="0 0 600 800" preserveAspectRatio="xMidYMid meet"><image width="600" height="800" xlink:href="${escapeXml(href)}" alt="Cover" />
+    <svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100%" height="99%" viewBox="0 0 600 800" preserveAspectRatio="xMidYMid meet"><image width="600" height="800" xlink:href="${escapeXml(href)}" alt="Cover" />
   </svg>
 </body>
 </html>
