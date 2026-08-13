@@ -3,7 +3,7 @@
 
 CLI tool for compiling a directory into an EPUB ebook
 
-Version: 2.6.1
+Version: 2.7.0
 
 ---
 
@@ -14,10 +14,12 @@ Version: 2.6.1
 - 📂 Create directory structure with all necessary files
 - 🔄 Convert Markdown (.md) to XHTML (.xhtml) and vice versa
 - 📄 Convert DOCX (.docx) to Markdown (.md) with smart heading detection
+- 📥 **Import existing EPUB** – extract chapters, metadata, cover, and media into the project structure
 - 🌍 Multilingual support (Indonesian & English)
 - 📋 Chapter order control via optional ord.txt
 - 🎨 Automatic cover, TOC, and metadata generation
 - 📦 Zero-config build with sensible defaults
+- ⚙️ Flexible input paths and force-overwrite options
 
 ---
 
@@ -29,16 +31,14 @@ cd epubcreator
 ```
 or download as ZIP
 
-Dependencies
-
+**Main dependencies:**
 ```bash
 npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4
 ```
 
-For DOCX conversion (optional):
-```bash
-npm install mammoth@1.6.0
-```
+**Optional dependencies:**
+- For DOCX conversion: `npm install mammoth@1.6.0`
+- For EPUB import: `npm install adm-zip@0.5.10 xml2js@0.5.0`
 
 ---
 
@@ -56,16 +56,18 @@ Available Commands
     Create a chapter .xhtml template file
 - `createdir`
     Create directory structure and template files
-- `convertch`
-    Convert .md files to .xhtml (valid XHTML output)
-- `convertch xhtml2md`
-    Convert .xhtml files to .md (reverse)
-- `convertch docx2md`
-    Convert .docx files to .md (split by ## headings)
+- `convertch` [path] [options]
+    Convert .md files to .xhtml (default; scans Markdowns/ or given path)
+- `convertch xhtml2md` [path]
+    Convert .xhtml files to .md (scans EPUB/ or given path)
+- `convertch docx2md` [path] [options]
+    Convert .docx files to .md (scans Docs/ or given path; split by ##)
 - `conv ...`
-    Alias for convertch
+    Alias for convertch (same subcommands and options)
 - `build`
     Build EPUB from current directory
+- `import` [options]
+    Import an existing .epub file from the current directory into the project structure
 - `lang-id`
     Switch language to Indonesian
 - `lang-en`
@@ -74,6 +76,18 @@ Available Commands
     Show version
 - `help`, `--help`
     Show help message
+
+**Options for `convertch` (MD → XHTML):**
+- `--force`, `-f` – Overwrite existing .xhtml files without asking.
+
+**Options for `convertch docx2md`:**
+- `--force`, `-f` – Overwrite existing .md files without asking.
+- `--output <dir>` – Output directory (default: `Markdowns/fromdocx`).
+- `--no-images` – Suppress warning about unsupported image extraction (currently images are ignored anyway).
+
+**Options for `import`:**
+- `--force`, `-f` – Overwrite existing files without asking.
+- `--output <dir>` – Target directory (default: current directory).
 
 ---
 
@@ -179,26 +193,58 @@ If ord.txt doesn't exist, chapters are sorted naturally (numeric-aware).
 
 **convertch** — Markdown → XHTML
 
-- Scans the Markdowns/ directory (or specified path)
-- Extracts `## Heading` as chapter title
-- Converts Markdown to valid XHTML
+- Scans the `Markdowns/` directory (or a given path) for `.md` files.
+- Extracts `## Heading` as chapter title.
+- Converts Markdown to valid XHTML.
 - Handles images, lists, tables, etc.
+- Supports `--force` to overwrite existing files without prompts.
 
 **convertch xhtml2md** — XHTML → Markdown
 
-- Scans the EPUB/ directory (or specified path)
-- Extracts `<title>` as chapter title
-- Converts XHTML back to Markdown
-- Excludes cover.xhtml, toc.xhtml, nav.xhtml
+- Scans the `EPUB/` directory (or a given path) for `.xhtml` files.
+- Extracts `<title>` as chapter title.
+- Converts XHTML back to Markdown.
+- Excludes `cover.xhtml`, `toc.xhtml`, `nav.xhtml`.
 
 **convertch docx2md** — DOCX → Markdown
 
-- Scans the Docs/ directory (or specified path)
-- Converts DOCX to HTML using mammoth
-- Detects headings by Word styles (Heading 1, 2, 3) or font size
-- Splits output into multiple .md files by `##` headings
-- Supports custom heading size mapping via `[docx-mapping]` in config.txt
-- Saves output to Markdowns/fromdocx/ (or custom output path)
+- Scans the `Docs/` directory (or a given path) for `.docx` files.
+- Converts DOCX to HTML using mammoth.
+- Detects headings by Word styles (Heading 1, 2, 3) or by font size if `[docx-mapping]` is configured.
+- Splits output into multiple `.md` files by `##` headings.
+- Supports `--output`, `--force`, and `--no-images`.
+
+---
+
+📥 Import Existing EPUB
+
+The `import` command extracts an existing `.epub` file into the project structure:
+
+1. Scans the current directory (or `--output`) for `.epub` files.
+2. If multiple are found, prompts you to choose one.
+3. Extracts:
+   - **Metadata** – title, author, language, identifier, date, publisher, description, subjects, series info, contributors.
+   - **Chapters** – all XHTML files listed in the spine (saved to `EPUB/`).
+   - **Cover image** – if found, saved to `EPUB/images/`.
+   - **Other images** – saved to `EPUB/images/`.
+   - **Audio/Video** – saved to `EPUB/audiovideo/`.
+4. Generates `config.txt` and `ord.txt` automatically based on extracted data.
+5. Existing files are skipped unless `--force` is used.
+
+**Example:**
+```bash
+# Import the only .epub in the current directory
+node epubcreator.js import
+
+# Force overwrite and specify output directory
+node epubcreator.js import --force --output ./my_book
+```
+
+After import, you can:
+- Edit `config.txt` to adjust metadata.
+- Edit the XHTML files in `EPUB/` if needed.
+- Run `node epubcreator.js convertch xhtml2md` to convert chapters to Markdown for easier editing.
+- Run `node epubcreator.js build` to rebuild the EPUB.
 
 ---
 
@@ -206,15 +252,15 @@ If ord.txt doesn't exist, chapters are sorted naturally (numeric-aware).
 
 The build command:
 
-1. Reads config.txt for metadata
-2. Collects chapters from EPUB/ (respects ord.txt if exists)
-3. Detects cover image (cover.png in EPUB/images/)
+1. Reads config.txt for metadata.
+2. Collects chapters from `EPUB/` (respects ord.txt if exists).
+3. Detects cover image (`cover.png` in `EPUB/images/`).
 4. Generates:
-   - volume.opf — EPUB package file
-   - toc.xhtml — Table of Contents
-   - cover.xhtml — Cover page
-   - META-INF/container.xml
-5. Packages everything into builds/[folder-name].epub
+   - `volume.opf` — EPUB package file
+   - `toc.xhtml` — Table of Contents
+   - `cover.xhtml` — Cover page
+   - `META-INF/container.xml`
+5. Packages everything into `builds/[folder-name].epub`.
 
 ---
 
@@ -222,9 +268,9 @@ The build command:
 
 The tool supports Indonesian (id) and English (en).
 
-- First run will ask for language preference
-- Language is saved in .epubcreator.txt
-- Switch anytime with lang-id or lang-en
+- On first run, you will be prompted to choose your preferred language.
+- The choice is saved in `.epubcreator.txt` in the current directory.
+- Switch anytime with `lang-id` or `lang-en`.
 
 ---
 
@@ -237,9 +283,7 @@ node epubcreator.js createdir
 ```
 
 This creates:
-
-- config.txt
-- ord.txt
+- config.txt, ord.txt
 - EPUB/ with images/ and audiovideo/
 - Markdowns/
 - Docs/
@@ -255,30 +299,55 @@ node epubcreator.js createchapter
 3. Convert Markdown to XHTML
 
 ```bash
+# Default: scans Markdowns/
 node epubcreator.js convertch
+
+# Specify a different directory or file
+node epubcreator.js convertch ./my_markdown
+
+# Force overwrite
+node epubcreator.js convertch --force
 ```
 
 4. Convert DOCX to Markdown
 
 ```bash
+# Scan Docs/ (default)
 node epubcreator.js convertch docx2md
-# Or with custom path
-node epubcreator.js conv docx2md --output ./MyMarkdowns
+
+# Custom input and output
+node epubcreator.js convertch docx2md ./MyDocs --output ./MyMarkdowns
+
+# Force overwrite
+node epubcreator.js conv docx2md -f
 ```
 
-5. Build the EPUB
+5. Import an existing EPUB
+
+```bash
+# Import the first .epub found
+node epubcreator.js import
+
+# Choose from multiple .epub files
+node epubcreator.js import
+
+# Force overwrite and specify output
+node epubcreator.js import --force --output ./imported_book
+```
+
+6. Build the EPUB
 
 ```bash
 node epubcreator.js build
 # Output: builds/[folder-name].epub
 ```
 
-6. Convert XHTML back to Markdown
+7. Convert XHTML back to Markdown
 
 ```bash
 node epubcreator.js convertch xhtml2md
-# Or using the alias
-node epubcreator.js conv xhtml2md
+# or using the alias
+node epubcreator.js conv xhtml2md ./EPUB/custom
 ```
 
 ---
@@ -289,6 +358,8 @@ node epubcreator.js conv xhtml2md
 - **marked** (4.0.0) — Markdown parsing
 - **turndown** (7.2.4) — XHTML to Markdown conversion
 - **mammoth** (1.6.0) — DOCX to HTML conversion (optional)
+- **adm-zip** (0.5.10) — EPUB import (optional)
+- **xml2js** (0.5.0) — OPF parsing for import (optional)
 
 ---
 
