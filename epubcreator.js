@@ -2,20 +2,22 @@
 /**
  * epubcreator.js — Node CLI untuk kompilasi direktori ke EPUB
  *
- * Versi: 2.7.0
+ * Versi: 2.8.1
  *
  *  Copyright (C) 2026 YogabyAllwaysever.
  *
  * Cara pakai:
  *   node epubcreator.js createconfig        → buat config.txt template
  *   node epubcreator.js createchapter       → buat file bab .xhtml template (di EPUB/)
- *   node epubcreator.js createdir           → buat struktur direktori dan file template
+ *   node epubcreator.js createdir           → buat struktur direktori + file template
  *   node epubcreator.js convertch           → ubah file .md menjadi .xhtml (default)
  *   node epubcreator.js convertch xhtml2md  → ubah file .xhtml menjadi .md
  *   node epubcreator.js convertch docx2md   → ubah file .docx menjadi .md (pecah berdasarkan ##)
  *   node epubcreator.js conv ...            → alias untuk convertch
  *   node epubcreator.js build               → build EPUB dari direktori saat ini
  *   node epubcreator.js import              → impor file .epub dari direktori saat ini
+ *   node epubcreator.js updatemodule        → download/update node_modules dari repo
+ *   node epubcreator.js updatemodule --force→ update tanpa konfirmasi
  *   node epubcreator.js lang-id             → ubah bahasa ke Indonesia
  *   node epubcreator.js lang-en             → ubah bahasa ke English (US)
  *   node epubcreator.js --version           → tampilkan versi
@@ -26,12 +28,14 @@
  *   - Jika tidak ada, urutkan otomatis berdasarkan nama file (natural sort)
  */
 
-const VERSION = '2.7.0';
+const VERSION = '2.8.1';
 
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const crypto = require('crypto');
+const https = require('https');
+const { execSync } = require('child_process');
 
 // ─── Konfigurasi bahasa ──────────────────────────────────────────────────
 const CONFIG_FILE = '.epubcreator.txt';
@@ -129,9 +133,22 @@ const messages = {
     import_cover_found: 'Cover ditemukan: {file}',
     import_force_overwrite: 'Menimpa file yang sudah ada (--force).',
 
+    // updatemodule
+    node_modules_missing: 'node_modules tidak ditemukan.',
+    download_confirm: 'Download pre-built dependencies dari repository? (y/n) ',
+    extract_no_assets: '❌ Tidak ditemukan folder assets/node_modules dalam arsip.',
+    download_start: '📥 Mendownload bundle ...',
+    download_complete: '✅ Download selesai. Mengekstrak ...',
+    download_failed: '❌ Gagal mendownload bundle: {error}',
+    extract_failed: '❌ Gagal mengekstrak node_modules: {error}',
+    extract_success: '✅ node_modules berhasil diekstrak.',
+    tar_not_found: '❌ Perintah "tar" tidak ditemukan. Pastikan tar terinstal (Linux/macOS/Termux) atau gunakan Git Bash di Windows.',
+    update_confirm: 'Ini akan mengganti folder node_modules yang ada. Lanjutkan? (y/n) ',
+    update_force: 'Menimpa node_modules (--force).',
+
     // command unknown
     unknown_command: 'Perintah tidak dikenal: {cmd}',
-    usage_hint: 'Gunakan: createconfig | createchapter | createdir | convertch | conv | build | import | lang-id | lang-en | --version',
+    usage_hint: 'Gunakan: createconfig | createchapter | createdir | convertch | conv | build | import | updatemodule | lang-id | lang-en | --version',
 
     // Help
     help_title: '📚 epubcreator — CLI untuk kompilasi direktori ke EPUB  (v{version})',
@@ -145,6 +162,8 @@ const messages = {
   node epubcreator.js conv ...            Alias untuk convertch
   node epubcreator.js build               Build EPUB dari direktori saat ini
   node epubcreator.js import              Impor file .epub dari direktori saat ini
+  node epubcreator.js updatemodule        Download/update node_modules dari repo
+  node epubcreator.js updatemodule --force Update tanpa konfirmasi
   node epubcreator.js lang-id             Ubah bahasa ke Indonesia
   node epubcreator.js lang-en             Ubah bahasa ke English (US)
   node epubcreator.js --version           Tampilkan versi`,
@@ -155,6 +174,7 @@ Struktur direktori:
   ├── ord.txt             ← daftar urutan bab (opsional)
   ├── Docs/               ← tempat file .docx sumber (untuk docx2md)
   ├── Markdowns/          ← tempat file .md sumber (untuk convertch)
+  ├── node_modules/       ← dependensi (otomatis di-download via updatemodule)
   ├── EPUB/
   │   ├── images/
   │   │   └── cover.png   ← WAJIB
@@ -167,7 +187,9 @@ Struktur direktori:
 Catatan: pastikan sudah install dependensi utama:
   npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4
 Untuk fitur DOCX:  npm install mammoth@1.6.0 (opsional)
-Untuk fitur import: npm install adm-zip@0.5.10 xml2js@0.5.0 (opsional)`,
+Untuk fitur import: npm install adm-zip@0.5.10 xml2js@0.5.0 (opsional)
+
+  Atau jalankan "node epubcreator.js updatemodule" untuk download otomatis.`,
   },
 
   en: {
@@ -248,6 +270,7 @@ Untuk fitur import: npm install adm-zip@0.5.10 xml2js@0.5.0 (opsional)`,
     warning_ord_not_found: 'Warning: file "{file}" in ord.txt not found in EPUB/',
 
     // import
+    extract_no_assets: '❌ Folder assets/node_modules not found in archive.',
     import_no_epub: 'No .epub file found in this directory.',
     import_select: 'Select EPUB file to import:',
     import_select_prompt: 'Enter number (1-{count}): ',
@@ -260,9 +283,21 @@ Untuk fitur import: npm install adm-zip@0.5.10 xml2js@0.5.0 (opsional)`,
     import_cover_found: 'Cover found: {file}',
     import_force_overwrite: 'Overwriting existing files (--force).',
 
+    // updatemodule
+    node_modules_missing: 'node_modules not found.',
+    download_confirm: 'Download pre-built dependencies from repository? (y/n) ',
+    download_start: '📥 Downloading bundle ...',
+    download_complete: '✅ Download complete. Extracting ...',
+    download_failed: '❌ Failed to download bundle: {error}',
+    extract_failed: '❌ Failed to extract node_modules: {error}',
+    extract_success: '✅ node_modules extracted successfully.',
+    tar_not_found: '❌ "tar" command not found. Please ensure tar is installed (Linux/macOS/Termux) or use Git Bash on Windows.',
+    update_confirm: 'This will replace your existing node_modules folder. Continue? (y/n) ',
+    update_force: 'Overwriting node_modules (--force).',
+
     // command unknown
     unknown_command: 'Unknown command: {cmd}',
-    usage_hint: 'Use: createconfig | createchapter | createdir | convertch | conv | build | import | lang-id | lang-en | --version',
+    usage_hint: 'Use: createconfig | createchapter | createdir | convertch | conv | build | import | updatemodule | lang-id | lang-en | --version',
 
     // Help
     help_title: '📚 epubcreator — CLI for compiling directory to EPUB  (v{version})',
@@ -276,6 +311,8 @@ Untuk fitur import: npm install adm-zip@0.5.10 xml2js@0.5.0 (opsional)`,
   node epubcreator.js conv ...            Alias for convertch
   node epubcreator.js build               Build EPUB from current directory
   node epubcreator.js import              Import .epub file from current directory
+  node epubcreator.js updatemodule        Download/update node_modules from repo
+  node epubcreator.js updatemodule --force Update without confirmation
   node epubcreator.js lang-id             Switch language to Indonesian
   node epubcreator.js lang-en             Switch language to English (US)
   node epubcreator.js --version           Show version`,
@@ -286,6 +323,7 @@ Directory structure:
   ├── ord.txt             ← chapter order list (optional)
   ├── Docs/               ← source .docx files (for docx2md)
   ├── Markdowns/          ← source .md files (for convertch)
+  ├── node_modules/       ← dependencies (auto-downloaded via updatemodule)
   ├── EPUB/
   │   ├── images/
   │   │   └── cover.png   ← REQUIRED
@@ -298,7 +336,9 @@ Directory structure:
 Note: make sure main dependencies are installed:
   npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4
 For DOCX feature:  npm install mammoth@1.6.0 (optional)
-For import feature: npm install adm-zip@0.5.10 xml2js@0.5.0 (optional)`,
+For import feature: npm install adm-zip@0.5.10 xml2js@0.5.0 (optional)
+
+  Or run "node epubcreator.js updatemodule" to download automatically.`,
   }
 };
 
@@ -555,6 +595,116 @@ function adjustHeadings(html, mapping) {
 
   logI18n('docx_heading_mode_warn', {}, 'warn');
   return modified;
+}
+
+// ─── Download dan ekstrak node_modules ────────────────────────────────
+function isTarAvailable() {
+  try {
+    execSync('tar --version', { stdio: 'ignore' });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function downloadFile(url, destPath) {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(destPath);
+    const request = https.get(url, (response) => {
+      // Handle redirect
+      if (response.statusCode === 302 || response.statusCode === 301) {
+        const redirectUrl = response.headers.location;
+        if (!redirectUrl) {
+          reject(new Error('Redirect without location header'));
+          return;
+        }
+        // Recursive call with redirect
+        downloadFile(redirectUrl, destPath).then(resolve).catch(reject);
+        return;
+      }
+      if (response.statusCode !== 200) {
+        reject(new Error(`HTTP ${response.statusCode}: ${response.statusMessage}`));
+        return;
+      }
+      response.pipe(file);
+      file.on('finish', () => {
+        file.close();
+        resolve();
+      });
+      file.on('error', (err) => {
+        fs.unlink(destPath, () => {});
+        reject(err);
+      });
+    });
+    request.on('error', (err) => {
+      fs.unlink(destPath, () => {});
+      reject(err);
+    });
+    request.end();
+  });
+}
+
+function extractTarGz(tarballPath, destDir = '.') {
+  return new Promise((resolve, reject) => {
+    if (!isTarAvailable()) {
+      reject(new Error(t('tar_not_found')));
+      return;
+    }
+
+    // 1. Dapatkan nama folder top-level dari arsip
+    let topFolder;
+    try {
+      // Gunakan tar -tf untuk listing, ambil baris pertama
+      const listOutput = execSync(`tar -tf "${tarballPath}" | head -1`, { encoding: 'utf8' });
+      const firstLine = listOutput.trim();
+      if (!firstLine) throw new Error('Archive is empty or invalid');
+      topFolder = firstLine.split('/')[0];
+      if (!topFolder) throw new Error('Cannot determine top-level folder');
+    } catch (err) {
+      reject(new Error(`Failed to list archive: ${err.message}`));
+      return;
+    }
+
+    // 2. Cek apakah assets/node_modules ada di dalam
+    const checkCmd = `tar -tf "${tarballPath}" | grep -q "^${topFolder}/assets/node_modules/"`;
+    try {
+      execSync(checkCmd, { stdio: 'ignore' });
+    } catch (_) {
+      reject(new Error(t('extract_no_assets')));
+      return;
+    }
+
+    // 3. Ekstrak dengan path pasti (tanpa wildcard)
+    const srcPath = `${topFolder}/assets/node_modules`;
+    const cmd = `tar -xzf "${tarballPath}" --strip-components=2 -C "${destDir}" "${srcPath}"`;
+    try {
+      execSync(cmd, { stdio: 'inherit' });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+async function downloadAndExtractModules() {
+  const cwd = process.cwd();
+  const tarballPath = path.join(cwd, 'bundle.tar.gz');
+  const url = 'https://github.com/YogabyAllwaysever/epubcreator.js/archive/refs/heads/main.tar.gz';
+
+  logI18n('download_start', {}, 'info');
+  try {
+    await downloadFile(url, tarballPath);
+    logI18n('download_complete', {}, 'success');
+    await extractTarGz(tarballPath, cwd);
+    logI18n('extract_success', {}, 'success');
+  } catch (err) {
+    logI18n('download_failed', { error: err.message }, 'error');
+    throw err;
+  } finally {
+    if (fs.existsSync(tarballPath)) {
+      fs.unlinkSync(tarballPath);
+    }
+  }
 }
 
 // ─── Command: createconfig ─────────────────────────────────────────────
@@ -893,6 +1043,24 @@ extra_titles:
   } else {
     fs.writeFileSync(ordPath, '# Daftar urutan bab (satu baris satu .xhtml)\n', 'utf8');
     logI18n('created', { file: 'ord.txt' }, 'success');
+  }
+
+  // ─── Fitur auto-fetch node_modules ──────────────────────────────────
+  const nodeModulesDir = path.join(cwd, 'node_modules');
+  if (!fs.existsSync(nodeModulesDir)) {
+    logI18n('node_modules_missing', {}, 'warn');
+    const ans = await question(t('download_confirm'));
+    if (ans.toLowerCase() === 'y') {
+      try {
+        await downloadAndExtractModules();
+      } catch (err) {
+        logI18n('extract_failed', { error: err.message }, 'error');
+      }
+    } else {
+      logI18n('cancelled', {}, 'warn');
+    }
+  } else {
+    log('ℹ️ node_modules sudah ada, tidak diunduh ulang.', 'info');
   }
 
   logI18n('ready', {}, 'success');
@@ -2098,14 +2266,40 @@ extra_titles: ${extraTitles.join(', ')}
   rl.close();
 }
 
+// ─── Command: updatemodule ────────────────────────────────────────────
+async function cmdUpdateModule(force = false) {
+  const nodeModulesDir = path.join(process.cwd(), 'node_modules');
+  if (fs.existsSync(nodeModulesDir) && !force) {
+    const ans = await question(t('update_confirm'));
+    if (ans.toLowerCase() !== 'y') {
+      logI18n('cancelled', {}, 'warn');
+      rl.close();
+      return;
+    }
+  } else if (fs.existsSync(nodeModulesDir) && force) {
+    logI18n('update_force', {}, 'info');
+  }
+
+  try {
+    await downloadAndExtractModules();
+    logI18n('extract_success', {}, 'success');
+  } catch (err) {
+    logI18n('extract_failed', { error: err.message }, 'error');
+  }
+  rl.close();
+}
+
 // ─── Main ──────────────────────────────────────────────────────────────
 async function main() {
   // 1. Load/Setup bahasa (interaktif jika belum ada)
   currentLang = await loadOrAskLanguage();
 
-  // 2. Perintah lang-* (tidak perlu cek dependensi)
+  // 2. Ambil perintah
   const args = process.argv.slice(2);
   const command = args[0];
+
+  // ─── Perintah tanpa perlu dependensi ──────────────────────────────
+  // Bahasa
   if (command === 'lang-id' || command === 'lang-en') {
     const lang = command === 'lang-id' ? 'id' : 'en';
     const configPath = path.join(process.cwd(), CONFIG_FILE);
@@ -2116,13 +2310,12 @@ async function main() {
     return;
   }
 
-  // 3. Perintah --version / help (tanpa dependensi)
+  // Versi / Help
   if (command === '--version' || command === '-v') {
     console.log(`epubcreator v${VERSION}`);
     rl.close();
     return;
   }
-
   if (!command || command === 'help' || command === '--help') {
     console.log(t('help_title', { version: VERSION }));
     console.log(t('help_commands'));
@@ -2132,38 +2325,49 @@ async function main() {
     return;
   }
 
-  // 4. Perintah import (tidak butuh dependensi utama, hanya adm-zip & xml2js)
+  // Perintah yang tidak butuh modul tambahan (whitelist)
+  if (command === 'updatemodule') {
+    const force = args.includes('--force') || args.includes('-f');
+    await cmdUpdateModule(force);
+    return;
+  }
   if (command === 'import') {
     await cmdImport(args.slice(1));
     return;
   }
+  if (command === 'createdir') {
+    await cmdCreateDir();
+    return;
+  }
+  if (command === 'createconfig') {
+    await cmdCreateConfig();
+    return;
+  }
+  if (command === 'createchapter') {
+    await cmdCreateChapter();
+    return;
+  }
 
-  // 5. Perintah convertch / conv (dengan sub-perintah)
+  // ─── Perintah yang memerlukan dependensi ──────────────────────────
+  let deps;
+  try {
+    deps = checkDependencies();
+  } catch (_) {
+    process.exit(1);
+  }
+  const { archiver, marked, TurndownService } = deps;
+
+  // Handle convertch / conv
   if (command === 'convertch' || command === 'conv') {
-    // Cek dependensi dasar (selain mammoth)
-    let deps;
-    try {
-      deps = checkDependencies();
-    } catch (_) {
-      process.exit(1);
-    }
-    const { marked, TurndownService } = deps;
-
-    const sub = args[1] || 'md2xhtml'; // default sub-perintah
+    const sub = args[1] || 'md2xhtml';
     const rest = args.slice(2);
-
-    // Jika sub-perintah adalah 'md2xhtml' atau tidak dikenali, anggap md2xhtml
     if (sub === 'md2xhtml' || (sub !== 'xhtml2md' && sub !== 'docx2md')) {
-      // Mode MD → XHTML
-      const argPath = (sub === 'md2xhtml') ? rest[0] : args[1]; // jika sub tidak dikenali, arg pertama adalah path
+      const argPath = (sub === 'md2xhtml') ? rest[0] : args[1];
       const force = rest.includes('--force') || rest.includes('-f');
       await cmdConvertCh(argPath, force, marked);
     } else if (sub === 'xhtml2md') {
-      // Mode XHTML → MD
-      const argPath = rest[0];
-      await cmdConvertX(argPath, TurndownService);
+      await cmdConvertX(rest[0], TurndownService);
     } else if (sub === 'docx2md') {
-      // Mode DOCX → MD
       await cmdDocxToMd(rest);
     } else {
       logI18n('unknown_command', { cmd: sub }, 'error');
@@ -2173,47 +2377,22 @@ async function main() {
     return;
   }
 
-  // 6. Perintah convertchx (alias untuk xhtml2md, untuk kompatibilitas)
+  // convertchx (alias)
   if (command === 'convertchx') {
-    let deps;
-    try {
-      deps = checkDependencies();
-    } catch (_) {
-      process.exit(1);
-    }
-    const { TurndownService } = deps;
-    const argPath = args[1];
-    await cmdConvertX(argPath, TurndownService);
+    await cmdConvertX(args[1], TurndownService);
     return;
   }
 
-  // 7. Perintah lain (butuh dependensi)
-  let deps;
-  try {
-    deps = checkDependencies();
-  } catch (_) {
-    process.exit(1);
+  // build
+  if (command === 'build') {
+    await cmdBuild(archiver);
+    return;
   }
-  const { archiver, marked, TurndownService } = deps;
 
-  switch (command) {
-    case 'createconfig':
-      await cmdCreateConfig();
-      break;
-    case 'createchapter':
-      await cmdCreateChapter();
-      break;
-    case 'createdir':
-      await cmdCreateDir();
-      break;
-    case 'build':
-      await cmdBuild(archiver);
-      break;
-    default:
-      logI18n('unknown_command', { cmd: command }, 'error');
-      logI18n('usage_hint', {}, 'info');
-      rl.close();
-  }
+  // Perintah tidak dikenal
+  logI18n('unknown_command', { cmd: command }, 'error');
+  logI18n('usage_hint', {}, 'info');
+  rl.close();
 }
 
 main().catch((err) => {
