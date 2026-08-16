@@ -2,7 +2,7 @@
 /**
  * epubcreator.js — Node CLI untuk kompilasi direktori ke EPUB
  *
- * Versi: 2.8.1
+ * Versi: 2.8.2 (fixed for Google Play Books)
  *
  *  Copyright (C) 2026 YogabyAllwaysever.
  *
@@ -20,6 +20,7 @@
  *   node epubcreator.js updatemodule --force→ update tanpa konfirmasi
  *   node epubcreator.js lang-id             → ubah bahasa ke Indonesia
  *   node epubcreator.js lang-en             → ubah bahasa ke English (US)
+ *   node epubcreator.js validate            → validasi EPUB terakhir dengan epubcheck
  *   node epubcreator.js --version           → tampilkan versi
  *
  * Fitur ord.txt (opsional):
@@ -28,7 +29,7 @@
  *   - Jika tidak ada, urutkan otomatis berdasarkan nama file (natural sort)
  */
 
-const VERSION = '2.8.1';
+const VERSION = '2.8.2';
 
 const fs = require('fs');
 const path = require('path');
@@ -146,9 +147,15 @@ const messages = {
     update_confirm: 'Ini akan mengganti folder node_modules yang ada. Lanjutkan? (y/n) ',
     update_force: 'Menimpa node_modules (--force).',
 
+    // validate
+    validate_no_epub: 'Tidak ada file .epub di builds/',
+    validate_start: '🔍 Memvalidasi {file} ...',
+    validate_ok: '✅ Validasi lulus untuk {file}',
+    validate_fail: '❌ Validasi gagal:\n{output}',
+
     // command unknown
     unknown_command: 'Perintah tidak dikenal: {cmd}',
-    usage_hint: 'Gunakan: createconfig | createchapter | createdir | convertch | conv | build | import | updatemodule | lang-id | lang-en | --version',
+    usage_hint: 'Gunakan: createconfig | createchapter | createdir | convertch | conv | build | import | updatemodule | lang-id | lang-en | validate | --version',
 
     // Help
     help_title: '📚 epubcreator — CLI untuk kompilasi direktori ke EPUB  (v{version})',
@@ -166,6 +173,7 @@ const messages = {
   node epubcreator.js updatemodule --force Update tanpa konfirmasi
   node epubcreator.js lang-id             Ubah bahasa ke Indonesia
   node epubcreator.js lang-en             Ubah bahasa ke English (US)
+  node epubcreator.js validate            Validasi EPUB terakhir dengan epubcheck
   node epubcreator.js --version           Tampilkan versi`,
     help_structure: `
 Struktur direktori:
@@ -188,7 +196,7 @@ Catatan: pastikan sudah install dependensi utama:
   npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4
 Untuk fitur DOCX:  npm install mammoth@1.6.0 (opsional)
 Untuk fitur import: npm install adm-zip@0.5.10 xml2js@0.5.0 (opsional)
-
+Untuk validasi: install epubcheck (https://github.com/w3c/epubcheck)
   Atau jalankan "node epubcreator.js updatemodule" untuk download otomatis.`,
   },
 
@@ -295,9 +303,15 @@ Untuk fitur import: npm install adm-zip@0.5.10 xml2js@0.5.0 (opsional)
     update_confirm: 'This will replace your existing node_modules folder. Continue? (y/n) ',
     update_force: 'Overwriting node_modules (--force).',
 
+    // validate
+    validate_no_epub: 'No .epub file found in builds/',
+    validate_start: '🔍 Validating {file} ...',
+    validate_ok: '✅ Validation passed for {file}',
+    validate_fail: '❌ Validation failed:\n{output}',
+
     // command unknown
     unknown_command: 'Unknown command: {cmd}',
-    usage_hint: 'Use: createconfig | createchapter | createdir | convertch | conv | build | import | updatemodule | lang-id | lang-en | --version',
+    usage_hint: 'Use: createconfig | createchapter | createdir | convertch | conv | build | import | updatemodule | lang-id | lang-en | validate | --version',
 
     // Help
     help_title: '📚 epubcreator — CLI for compiling directory to EPUB  (v{version})',
@@ -315,6 +329,7 @@ Untuk fitur import: npm install adm-zip@0.5.10 xml2js@0.5.0 (opsional)
   node epubcreator.js updatemodule --force Update without confirmation
   node epubcreator.js lang-id             Switch language to Indonesian
   node epubcreator.js lang-en             Switch language to English (US)
+  node epubcreator.js validate            Validate latest EPUB with epubcheck
   node epubcreator.js --version           Show version`,
     help_structure: `
 Directory structure:
@@ -337,7 +352,7 @@ Note: make sure main dependencies are installed:
   npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4
 For DOCX feature:  npm install mammoth@1.6.0 (optional)
 For import feature: npm install adm-zip@0.5.10 xml2js@0.5.0 (optional)
-
+For validation: install epubcheck (https://github.com/w3c/epubcheck)
   Or run "node epubcreator.js updatemodule" to download automatically.`,
   }
 };
@@ -466,6 +481,12 @@ function escapeXml(str) {
     '"': '&quot;',
     "'": '&apos;',
   }[m]));
+}
+
+// ─── Helper untuk timestamp EPUB tanpa milidetik ──────────────────────
+function getEpubTimestamp() {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+  // Hasil: "2026-08-16T14:30:00Z" ← valid!
 }
 
 // ─── Ekstrak judul dari Markdown (hanya heading level 2) ──────────────
@@ -1606,6 +1627,7 @@ function getMimeType(filename) {
   return map[ext] || 'application/octet-stream';
 }
 
+// ─── generateOpf — FIXED ──────────────────────────────────────────────
 function generateOpf(config, chapters, media) {
   const { mainTitle, subTitle, volume, creator, language, identifier, date,
     publisher, description, subjects, seriesName, seriesNumber,
@@ -1622,14 +1644,21 @@ function generateOpf(config, chapters, media) {
     metadata.push(`<dc:title>${escapeXml(t)}</dc:title>`);
   }
 
-  if (creator) metadata.push(`<dc:creator id="creator">${escapeXml(creator)}</dc:creator>`);
+  // ─── HANYA SATU creator utama ──────────────────────────────────────
+  if (creator) {
+    metadata.push(`<dc:creator id="creator">${escapeXml(creator)}</dc:creator>`);
+  }
 
+  // ─── Kontributor LAINNYA sebagai <dc:contributor> ──────────────────
+  // (termasuk role 'aut' jika creator utama sudah ada)
   for (const c of contributors) {
     const role = c.role || 'ctb';
-    if (role === 'aut') {
+    // Jika role 'aut' dan kita TIDAK punya creator utama, maka jadikan creator
+    if (role === 'aut' && !creator) {
       metadata.push(`<dc:creator id="creator">${escapeXml(c.name)}</dc:creator>`);
     } else {
-      metadata.push(`<dc:contributor>${escapeXml(c.name)}</dc:contributor>`);
+      const roleLabel = role === 'aut' ? 'author' : (role === 'edt' ? 'editor' : role);
+      metadata.push(`<dc:contributor>${escapeXml(c.name)} (${roleLabel})</dc:contributor>`);
     }
   }
 
@@ -1656,7 +1685,9 @@ function generateOpf(config, chapters, media) {
     }
   }
 
-  metadata.push(`<meta property="dcterms:modified">${new Date().toISOString()}</meta>`);
+  // ─── dcterms:modified dengan format tanpa milidetik ──────────────
+  metadata.push(`<meta property="dcterms:modified">${getEpubTimestamp()}</meta>`);
+
   metadata.push(`<meta property="rendition:layout">reflowable</meta>`);
   metadata.push(`<meta property="schema:accessMode">textual</meta>`);
   metadata.push(`<meta property="schema:accessibilityFeature">tableOfContents</meta>`);
@@ -1722,6 +1753,7 @@ function generateOpf(config, chapters, media) {
   return opf;
 }
 
+// ─── generateToc — FIXED ──────────────────────────────────────────────
 function generateToc(chapters) {
   const items = chapters.map(ch =>
     `<li><a href="${escapeXml(ch.path)}">${escapeXml(ch.title)}</a></li>`
@@ -1729,7 +1761,8 @@ function generateToc(chapters) {
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml">
+<html xmlns="http://www.w3.org/1999/xhtml"
+      xmlns:epub="http://www.idpf.org/2007/ops">
 <head>
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
   <title>Table of Contents</title>
@@ -2289,6 +2322,37 @@ async function cmdUpdateModule(force = false) {
   rl.close();
 }
 
+// ─── Command: validate ─────────────────────────────────────────────────
+async function cmdValidate() {
+  const buildsDir = path.join(process.cwd(), 'builds');
+  if (!fs.existsSync(buildsDir)) {
+    logI18n('validate_no_epub', {}, 'error');
+    rl.close();
+    return;
+  }
+  const files = fs.readdirSync(buildsDir).filter(f => f.endsWith('.epub'));
+  if (files.length === 0) {
+    logI18n('validate_no_epub', {}, 'error');
+    rl.close();
+    return;
+  }
+  // Ambil file terbaru (urutkan berdasarkan nama)
+  const latest = files.sort().pop();
+  const epubPath = path.join(buildsDir, latest);
+  logI18n('validate_start', { file: latest }, 'info');
+
+  // Coba jalankan epubcheck (harus terinstal di PATH)
+  let output;
+  try {
+    output = execSync(`epubcheck "${epubPath}"`, { encoding: 'utf8' });
+    logI18n('validate_ok', { file: latest }, 'success');
+    console.log(output);
+  } catch (err) {
+    logI18n('validate_fail', { output: err.stdout || err.message }, 'error');
+  }
+  rl.close();
+}
+
 // ─── Main ──────────────────────────────────────────────────────────────
 async function main() {
   // 1. Load/Setup bahasa (interaktif jika belum ada)
@@ -2345,6 +2409,10 @@ async function main() {
   }
   if (command === 'createchapter') {
     await cmdCreateChapter();
+    return;
+  }
+  if (command === 'validate') {
+    await cmdValidate();
     return;
   }
 
