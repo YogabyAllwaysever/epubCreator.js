@@ -3,7 +3,7 @@
 
 CLI tool for compiling a directory into an EPUB ebook
 
-Version: 2.8.1
+Version: 2.8.5
 
 ---
 
@@ -14,6 +14,8 @@ Version: 2.8.1
 - 📂 Create directory structure with all necessary files
 - 🔄 Convert Markdown (.md) to XHTML (.xhtml) and vice versa
 - 📄 Convert DOCX (.docx) to Markdown (.md) with smart heading detection
+- ✂️ **Split** Markdown files by headings (`##`) into multiple files
+- 🔗 **Merge** multiple Markdown files into one (reverse of split)
 - 📥 **Import existing EPUB** – extract chapters, metadata, cover, and media into the project structure
 - 📦 **Auto‑download dependencies** – fetch and extract pre‑built `node_modules` from the repository
 - 🌍 Multilingual support (Indonesian & English)
@@ -57,33 +59,37 @@ node epubcreator.js <command> [options]
 Available Commands
 
 · createconfig
-  Create config.txt template
+Create config.txt template
 · createchapter
-  Create a chapter .xhtml template file
+Create a chapter .xhtml template file
 · createdir
-  Create directory structure and template files
+Create directory structure and template files
 · convertch [path] [options]
-  Convert .md files to .xhtml (default; scans Markdowns/ or given path)
+Convert .md files to .xhtml (default; scans Markdowns/ or given path)
 · convertch xhtml2md [path]
-  Convert .xhtml files to .md (scans EPUB/ or given path)
+Convert .xhtml files to .md (scans EPUB/ or given path)
 · convertch docx2md [path] [options]
-  Convert .docx files to .md (scans Docs/ or given path; split by ##)
+Convert .docx files to .md (scans Docs/ or given path; split by ##)
 · conv ...
-  Alias for convertch (same subcommands and options)
+Alias for convertch (same subcommands and options)
+· split <path> [options]
+Split a Markdown file into multiple files by heading level 2 (##)
+· merge <path> [options]
+Merge multiple Markdown files into one (reverse of split)
 · build
-  Build EPUB from current directory
+Build EPUB from current directory
 · import [options]
-  Import an existing .epub file from the current directory into the project structure
+Import an existing .epub file from the current directory into the project structure
 · updatemodule [--force]
-  Download/update node_modules from the repository (pre‑built bundle)
+Download/update node_modules from the repository (pre‑built bundle)
 · lang-id
-  Switch language to Indonesian
+Switch language to Indonesian
 · lang-en
-  Switch language to English (US)
+Switch language to English (US)
 · --version, -v
-  Show version
+Show version
 · help, --help
-  Show help message
+Show help message
 
 Options for convertch (MD → XHTML):
 
@@ -94,6 +100,17 @@ Options for convertch docx2md:
 · --force, -f – Overwrite existing .md files without asking.
 · --output <dir> – Output directory (default: Markdowns/fromdocx).
 · --no-images – Suppress warning about unsupported image extraction (currently images are ignored anyway).
+· --nosplit, -n – Do not split by headings; output a single .md file per .docx (new).
+
+Options for split:
+
+· --output <dir> – Output directory (default: Markdowns/split).
+· --force, -f – Overwrite existing files without asking.
+
+Options for merge:
+
+· --output <file> – Output file path (default: merged.md).
+· --force, -f – Overwrite existing file without asking.
 
 Options for import:
 
@@ -226,8 +243,22 @@ convertch docx2md — DOCX → Markdown
 · Scans the Docs/ directory (or a given path) for .docx files.
 · Converts DOCX to HTML using mammoth.
 · Detects headings by Word styles (Heading 1, 2, 3) or by font size if [docx-mapping] is configured.
-· Splits output into multiple .md files by ## headings.
-· Supports --output, --force, and --no-images.
+· Splits output into multiple .md files by ## headings by default.
+· Supports --output, --force, --no-images, and --nosplit (to produce a single .md per .docx).
+
+split — Split Markdown by Headings
+
+· Splits a .md file (or all .md files in a directory) into separate files at each level-2 heading (##).
+· Each part is saved as [basename]-pN.md where N is the part number.
+· If no heading is found, the entire content is saved as one file.
+· Supports --output and --force.
+
+merge — Merge Markdown Files
+
+· Merges all .md files found in a directory (or a single file) into one output file.
+· Files are combined in natural (numeric-aware) order.
+· Useful to reverse the split operation or to combine chapter files.
+· Supports --output and --force.
 
 ---
 
@@ -360,9 +391,32 @@ node epubcreator.js convertch docx2md ./MyDocs --output ./MyMarkdowns
 
 # Force overwrite
 node epubcreator.js conv docx2md -f
+
+# Output a single .md file per .docx (no split)
+node epubcreator.js convertch docx2md --nosplit
 ```
 
-5. Import an existing EPUB
+5. Split a Markdown file
+
+```bash
+# Split all .md files in Markdowns/
+node epubcreator.js split Markdowns/
+
+# Split a single file and save to custom directory
+node epubcreator.js split chapter.md --output ./split_parts --force
+```
+
+6. Merge Markdown files
+
+```bash
+# Merge all .md files in Markdowns/ into merged.md
+node epubcreator.js merge Markdowns/
+
+# Merge with custom output and force overwrite
+node epubcreator.js merge ./split_parts --output full.md --force
+```
+
+7. Import an existing EPUB
 
 ```bash
 # Import the first .epub found
@@ -375,14 +429,14 @@ node epubcreator.js import
 node epubcreator.js import --force --output ./imported_book
 ```
 
-6. Build the EPUB
+8. Build the EPUB
 
 ```bash
 node epubcreator.js build
 # Output: builds/[folder-name].epub
 ```
 
-7. Convert XHTML back to Markdown
+9. Convert XHTML back to Markdown
 
 ```bash
 node epubcreator.js convertch xhtml2md
@@ -390,7 +444,7 @@ node epubcreator.js convertch xhtml2md
 node epubcreator.js conv xhtml2md ./EPUB/custom
 ```
 
-8. Download dependencies automatically
+10. Download dependencies automatically
 
 ```bash
 node epubcreator.js updatemodule

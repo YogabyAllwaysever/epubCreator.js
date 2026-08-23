@@ -2,7 +2,7 @@
 /**
  * epubcreator.js — Node CLI untuk kompilasi direktori ke EPUB
  *
- * Versi: 2.8.2 (fixed for Google Play Books)
+ * Versi: 2.8.5 (added merge command)
  *
  *  Copyright (C) 2026 YogabyAllwaysever.
  *
@@ -14,6 +14,8 @@
  *   node epubcreator.js convertch xhtml2md  → ubah file .xhtml menjadi .md
  *   node epubcreator.js convertch docx2md   → ubah file .docx menjadi .md (pecah berdasarkan ##)
  *   node epubcreator.js conv ...            → alias untuk convertch
+ *   node epubcreator.js split <path>        → pecah file .md berdasarkan heading ##
+ *   node epubcreator.js merge <path>        → gabungkan file .md menjadi satu (kebalikan split)
  *   node epubcreator.js build               → build EPUB dari direktori saat ini
  *   node epubcreator.js import              → impor file .epub dari direktori saat ini
  *   node epubcreator.js updatemodule        → download/update node_modules dari repo
@@ -29,7 +31,7 @@
  *   - Jika tidak ada, urutkan otomatis berdasarkan nama file (natural sort)
  */
 
-const VERSION = '2.8.2';
+const VERSION = '2.8.5';
 
 const fs = require('fs');
 const path = require('path');
@@ -105,7 +107,25 @@ const messages = {
     docx_no_files: 'Tidak ditemukan file .docx.',
     docx_processing: '📄 Memproses: {file}',
     docx_no_images: 'ℹ️ Ekstraksi gambar dari DOCX belum didukung; gambar akan diabaikan.',
-    docx_heading_mode_warn: '⚠️ Mode ukuran font untuk heading belum stabil; disarankan menggunakan style Word.',
+    docx_heading_mode_warn: '⚠️ Mode ukuran font untuk heading digunakan (dengan ambang batas yang dikonfigurasi).',
+    docx_nosplit_mode: 'ℹ️ Mode tanpa pemisahan (--nosplit) aktif, semua konten akan digabung dalam satu file.',
+
+    // split
+    split_usage: 'node epubcreator.js split <path> [--output dir] [--force]',
+    split_processing: 'Memproses {file} ...',
+    split_no_heading: 'Tidak ditemukan heading level 2 (##) di {file}, seluruh konten disimpan sebagai satu file.',
+    split_parts: 'Dibagi menjadi {count} bagian.',
+    split_created: 'File dibuat: {file}',
+    split_summary: 'Selesai: {success} dari {total} file berhasil diproses.',
+    split_output_dir: 'Direktori output: {dir}',
+
+    // merge
+    merge_usage: 'node epubcreator.js merge <path> [--output file] [--force]',
+    merge_no_files: 'Tidak ditemukan file .md di {path}.',
+    merge_processing: 'Menggabungkan {count} file ...',
+    merge_created: 'File gabungan dibuat: {file}',
+    merge_summary: '✅ {count} file berhasil digabung menjadi {output}.',
+    merge_output_file: 'Output: {file}',
 
     // build
     config_not_found: 'config.txt tidak ditemukan! Jalankan: node epubcreator.js createconfig',
@@ -155,7 +175,7 @@ const messages = {
 
     // command unknown
     unknown_command: 'Perintah tidak dikenal: {cmd}',
-    usage_hint: 'Gunakan: createconfig | createchapter | createdir | convertch | conv | build | import | updatemodule | lang-id | lang-en | validate | --version',
+    usage_hint: 'Gunakan: createconfig | createchapter | createdir | convertch | conv | split | merge | build | import | updatemodule | lang-id | lang-en | validate | --version',
 
     // Help
     help_title: '📚 epubcreator — CLI untuk kompilasi direktori ke EPUB  (v{version})',
@@ -167,6 +187,8 @@ const messages = {
   node epubcreator.js convertch xhtml2md  Ubah .xhtml → .md
   node epubcreator.js convertch docx2md   Ubah .docx → .md (pecah berdasarkan ##)
   node epubcreator.js conv ...            Alias untuk convertch
+  node epubcreator.js split <path>        Pecah file .md berdasarkan heading ##
+  node epubcreator.js merge <path>        Gabungkan file .md menjadi satu (kebalikan split)
   node epubcreator.js build               Build EPUB dari direktori saat ini
   node epubcreator.js import              Impor file .epub dari direktori saat ini
   node epubcreator.js updatemodule        Download/update node_modules dari repo
@@ -261,7 +283,25 @@ Untuk validasi: install epubcheck (https://github.com/w3c/epubcheck)
     docx_no_files: 'No .docx files found.',
     docx_processing: '📄 Processing: {file}',
     docx_no_images: 'ℹ️ Image extraction from DOCX not yet supported; images will be ignored.',
-    docx_heading_mode_warn: '⚠️ Font size based heading mode is unstable; using Word styles is recommended.',
+    docx_heading_mode_warn: '⚠️ Font size based heading mode is used (with configured thresholds).',
+    docx_nosplit_mode: 'ℹ️ No-split mode (--nosplit) is active, all content will be merged into one file.',
+
+    // split
+    split_usage: 'node epubcreator.js split <path> [--output dir] [--force]',
+    split_processing: 'Processing {file} ...',
+    split_no_heading: 'No heading level 2 (##) found in {file}, entire content saved as one file.',
+    split_parts: 'Split into {count} parts.',
+    split_created: 'File created: {file}',
+    split_summary: 'Done: {success} out of {total} files processed successfully.',
+    split_output_dir: 'Output directory: {dir}',
+
+    // merge
+    merge_usage: 'node epubcreator.js merge <path> [--output file] [--force]',
+    merge_no_files: 'No .md files found in {path}.',
+    merge_processing: 'Merging {count} files ...',
+    merge_created: 'Merged file created: {file}',
+    merge_summary: '✅ {count} files successfully merged into {output}.',
+    merge_output_file: 'Output: {file}',
 
     // build
     config_not_found: 'config.txt not found! Run: node epubcreator.js createconfig',
@@ -311,7 +351,7 @@ Untuk validasi: install epubcheck (https://github.com/w3c/epubcheck)
 
     // command unknown
     unknown_command: 'Unknown command: {cmd}',
-    usage_hint: 'Use: createconfig | createchapter | createdir | convertch | conv | build | import | updatemodule | lang-id | lang-en | validate | --version',
+    usage_hint: 'Use: createconfig | createchapter | createdir | convertch | conv | split | merge | build | import | updatemodule | lang-id | lang-en | validate | --version',
 
     // Help
     help_title: '📚 epubcreator — CLI for compiling directory to EPUB  (v{version})',
@@ -323,6 +363,8 @@ Untuk validasi: install epubcheck (https://github.com/w3c/epubcheck)
   node epubcreator.js convertch xhtml2md  Convert .xhtml → .md
   node epubcreator.js convertch docx2md   Convert .docx → .md (split by ##)
   node epubcreator.js conv ...            Alias for convertch
+  node epubcreator.js split <path>        Split .md file by heading ##
+  node epubcreator.js merge <path>        Merge .md files into one (reverse of split)
   node epubcreator.js build               Build EPUB from current directory
   node epubcreator.js import              Import .epub file from current directory
   node epubcreator.js updatemodule        Download/update node_modules from repo
@@ -577,45 +619,78 @@ function readDocxMapping() {
   return Object.keys(mapping).length > 0 ? mapping : null;
 }
 
-// ─── Sesuaikan heading berdasarkan mapping ──────────────────────────
+// ─── Sesuaikan heading berdasarkan mapping (FIXED) ──────────────────
 function adjustHeadings(html, mapping) {
-  // Jika tidak ada mapping, gunakan class style dari Word
+  // Mode 1: Tanpa mapping → gunakan class Word (heading1, heading2, heading3)
   if (!mapping) {
-    // Ganti class heading1/2/3 menjadi h1/h2/h3
-    html = html.replace(/<p\s+class="heading1"[^>]*>/gi, '<h1>');
-    html = html.replace(/<p\s+class="heading2"[^>]*>/gi, '<h2>');
-    html = html.replace(/<p\s+class="heading3"[^>]*>/gi, '<h3>');
-    // Penutup: ubah </p> menjadi </h1/h2/h3> secara kasar, tapi kita biarkan turndown menangani.
-    return html;
+    // Ganti seluruh paragraf dengan class heading menjadi tag heading
+    let modified = html;
+    modified = modified.replace(/<p\s+class="heading1"[^>]*>([\s\S]*?)<\/p>/gi, '<h1>$1</h1>');
+    modified = modified.replace(/<p\s+class="heading2"[^>]*>([\s\S]*?)<\/p>/gi, '<h2>$1</h2>');
+    modified = modified.replace(/<p\s+class="heading3"[^>]*>([\s\S]*?)<\/p>/gi, '<h3>$1</h3>');
+    return modified;
   }
 
-  // Mode ukuran: parsing style font-size
+  // Mode 2: Dengan mapping → gunakan ukuran font (dalam pt)
   const thresholds = [
     { level: 1, size: mapping.heading1 || 24 },
     { level: 2, size: mapping.heading2 || 18 },
     { level: 3, size: mapping.heading3 || 14 }
   ].sort((a, b) => b.size - a.size);
 
-  // Kita gunakan regex untuk mengganti <p> yang memiliki style font-size
-  const pRegex = /<p\s+([^>]*style="[^"]*font-size:(\d+)pt[^"]*"[^>]*)>/gi;
-  let modified = html;
-  let match;
-  while ((match = pRegex.exec(html)) !== null) {
-    const full = match[0];
-    const size = parseInt(match[2]);
-    let level = 0;
-    for (const th of thresholds) {
-      if (size >= th.size) { level = th.level; break; }
-    }
-    if (level > 0) {
-      // Ganti tag pembuka
-      modified = modified.replace(full, `<h${level}>`);
-      // Kita tidak bisa ganti penutup dengan akurat, jadi biarkan saja.
-    }
-  }
+  // Coba gunakan cheerio jika tersedia (lebih akurat)
+  let useCheerio = false;
+  try {
+    require.resolve('cheerio');
+    useCheerio = true;
+  } catch (_) {}
 
-  logI18n('docx_heading_mode_warn', {}, 'warn');
-  return modified;
+  if (useCheerio) {
+    const cheerio = require('cheerio');
+    const $ = cheerio.load(html, { xmlMode: false });
+    $('p').each((i, el) => {
+      const style = $(el).attr('style');
+      if (style) {
+        const match = style.match(/font-size:\s*(\d+)pt/i);
+        if (match) {
+          const size = parseInt(match[1]);
+          let level = 0;
+          for (const th of thresholds) {
+            if (size >= th.size) { level = th.level; break; }
+          }
+          if (level > 0) {
+            const $el = $(el);
+            const content = $el.html();
+            const newTag = `<h${level}>${content}</h${level}>`;
+            $el.replaceWith(newTag);
+          }
+        }
+      }
+    });
+    return $.html();
+  } else {
+    // Fallback: regex yang mengganti seluruh <p> dengan style font-size
+    // Menangkap tag pembuka (termasuk style) dan konten sampai </p>
+    const pRegex = /<p\s+([^>]*style="[^"]*font-size:(\d+)pt[^"]*"[^>]*)>([\s\S]*?)<\/p>/gi;
+    let modified = html;
+    modified = modified.replace(pRegex, (match, attrs, sizeStr, content) => {
+      const size = parseInt(sizeStr);
+      let level = 0;
+      for (const th of thresholds) {
+        if (size >= th.size) { level = th.level; break; }
+      }
+      if (level > 0) {
+        return `<h${level}>${content}</h${level}>`;
+      }
+      return match; // pertahankan sebagai paragraf
+    });
+    // Tampilkan peringatan sekali saja (tidak berulang)
+    if (!adjustHeadings._warned) {
+      logI18n('docx_heading_mode_warn', {}, 'warn');
+      adjustHeadings._warned = true;
+    }
+    return modified;
+  }
 }
 
 // ─── Download dan ekstrak node_modules ────────────────────────────────
@@ -1359,11 +1434,13 @@ async function cmdDocxToMd(argv) {
   let output = './Markdowns/fromdocx';
   let force = false;
   let noImages = false;
+  let nosplit = false; // <--- BARU
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--force' || arg === '-f') force = true;
     else if (arg === '--no-images') noImages = true;
+    else if (arg === '--nosplit' || arg === '-n') nosplit = true; // <--- BARU
     else if (arg === '--output' && i + 1 < argv.length) {
       output = argv[i + 1];
       i++; // skip next
@@ -1418,6 +1495,10 @@ async function cmdDocxToMd(argv) {
     return;
   }
 
+  if (nosplit) {
+    logI18n('docx_nosplit_mode', {}, 'info');
+  }
+
   // Proses setiap file
   const isMultiple = docxFiles.length > 1;
   for (const docxFile of docxFiles) {
@@ -1457,11 +1538,11 @@ async function cmdDocxToMd(argv) {
         parts.push(markdown);
       }
 
-      // Tulis file p-*.md
-      for (let i = 0; i < parts.length; i++) {
-        const content = parts[i];
-        const num = i + 1;
-        const mdPath = path.join(outDir, `p-${num}.md`);
+      // --- TULIS FILE ---
+      if (nosplit) {
+        // Gabungkan semua bagian menjadi satu file
+        const combined = parts.join('\n\n');
+        const mdPath = path.join(outDir, `${baseName}.md`);
         if (fs.existsSync(mdPath) && !force) {
           const ans = await question(t('file_exists', { file: path.basename(mdPath) }));
           if (ans.toLowerCase() !== 'y') {
@@ -1469,8 +1550,24 @@ async function cmdDocxToMd(argv) {
             continue;
           }
         }
-        fs.writeFileSync(mdPath, content, 'utf8');
+        fs.writeFileSync(mdPath, combined, 'utf8');
         logI18n('created', { file: mdPath }, 'success');
+      } else {
+        // Perilaku lama: tulis p-*.md
+        for (let i = 0; i < parts.length; i++) {
+          const content = parts[i];
+          const num = i + 1;
+          const mdPath = path.join(outDir, `p-${num}.md`);
+          if (fs.existsSync(mdPath) && !force) {
+            const ans = await question(t('file_exists', { file: path.basename(mdPath) }));
+            if (ans.toLowerCase() !== 'y') {
+              logI18n('skip_file', { file: path.basename(mdPath) }, 'warn');
+              continue;
+            }
+          }
+          fs.writeFileSync(mdPath, content, 'utf8');
+          logI18n('created', { file: mdPath }, 'success');
+        }
       }
 
       if (!noImages) {
@@ -1482,6 +1579,206 @@ async function cmdDocxToMd(argv) {
   }
 
   log('✅ Selesai.', 'success');
+  rl.close();
+}
+
+// ─── Command: split ────────────────────────────────────────────────────
+async function cmdSplit(argv) {
+  // Parse argumen
+  let inputPath = null;
+  let outputDir = './Markdowns/split';
+  let force = false;
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--force' || arg === '-f') force = true;
+    else if (arg === '--output' && i + 1 < argv.length) {
+      outputDir = argv[i + 1];
+      i++;
+    } else if (!arg.startsWith('--')) {
+      inputPath = arg;
+    }
+  }
+
+  if (!inputPath) {
+    log(t('split_usage'), 'error');
+    rl.close();
+    return;
+  }
+
+  const target = path.resolve(process.cwd(), inputPath);
+  if (!fs.existsSync(target)) {
+    logI18n('path_not_found', { path: target }, 'error');
+    rl.close();
+    return;
+  }
+
+  const outDir = path.resolve(process.cwd(), outputDir);
+  ensureDir(outDir);
+  logI18n('split_output_dir', { dir: outDir }, 'info');
+
+  const stat = fs.statSync(target);
+  let mdFiles = [];
+  if (stat.isFile()) {
+    if (!target.toLowerCase().endsWith('.md')) {
+      logI18n('must_be_md', {}, 'error');
+      rl.close();
+      return;
+    }
+    mdFiles = [target];
+  } else if (stat.isDirectory()) {
+    mdFiles = walkMdFiles(target);
+  } else {
+    logI18n('invalid_path', {}, 'error');
+    rl.close();
+    return;
+  }
+
+  if (mdFiles.length === 0) {
+    logI18n('no_md_found', {}, 'warn');
+    rl.close();
+    return;
+  }
+
+  let successCount = 0;
+  for (const mdFile of mdFiles) {
+    logI18n('split_processing', { file: path.basename(mdFile) }, 'info');
+
+    try {
+      const content = fs.readFileSync(mdFile, 'utf8');
+      // Pecah berdasarkan heading level 2 (##)
+      const parts = content.split(/(?=^##\s+)/m).filter(p => p.trim() !== '');
+      let outFiles = [];
+
+      if (parts.length === 0) {
+        // Tidak ada heading level 2, simpan utuh
+        logI18n('split_no_heading', { file: path.basename(mdFile) }, 'warn');
+        const baseName = path.basename(mdFile, '.md');
+        const dest = path.join(outDir, `${baseName}.md`);
+        if (fs.existsSync(dest) && !force) {
+          const ans = await question(t('file_exists', { file: path.basename(dest) }));
+          if (ans.toLowerCase() !== 'y') {
+            logI18n('skip_file', { file: path.basename(dest) }, 'warn');
+            continue;
+          }
+        }
+        fs.writeFileSync(dest, content, 'utf8');
+        logI18n('split_created', { file: dest }, 'success');
+        outFiles.push(dest);
+        successCount++;
+      } else {
+        // Tulis setiap bagian sebagai p-1.md, p-2.md, ...
+        const baseName = path.basename(mdFile, '.md');
+        for (let i = 0; i < parts.length; i++) {
+          const part = parts[i];
+          const num = i + 1;
+          const dest = path.join(outDir, `${baseName}-p${num}.md`);
+          if (fs.existsSync(dest) && !force) {
+            const ans = await question(t('file_exists', { file: path.basename(dest) }));
+            if (ans.toLowerCase() !== 'y') {
+              logI18n('skip_file', { file: path.basename(dest) }, 'warn');
+              continue;
+            }
+          }
+          fs.writeFileSync(dest, part, 'utf8');
+          logI18n('split_created', { file: dest }, 'success');
+          outFiles.push(dest);
+        }
+        logI18n('split_parts', { count: parts.length }, 'info');
+        successCount++;
+      }
+    } catch (err) {
+      logI18n('convert_fail', { file: path.basename(mdFile), error: err.message }, 'error');
+    }
+  }
+
+  logI18n('split_summary', { success: successCount, total: mdFiles.length }, 'info');
+  rl.close();
+}
+
+// ─── Command: merge ────────────────────────────────────────────────────
+async function cmdMerge(argv) {
+  // Parse argumen
+  let inputPath = null;
+  let outputFile = './merged.md';
+  let force = false;
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--force' || arg === '-f') force = true;
+    else if (arg === '--output' && i + 1 < argv.length) {
+      outputFile = argv[i + 1];
+      i++;
+    } else if (!arg.startsWith('--')) {
+      inputPath = arg;
+    }
+  }
+
+  if (!inputPath) {
+    logI18n('merge_usage', {}, 'error');
+    rl.close();
+    return;
+  }
+
+  const target = path.resolve(process.cwd(), inputPath);
+  if (!fs.existsSync(target)) {
+    logI18n('path_not_found', { path: target }, 'error');
+    rl.close();
+    return;
+  }
+
+  // Kumpulkan file .md
+  let mdFiles = [];
+  const stat = fs.statSync(target);
+  if (stat.isFile()) {
+    if (!target.toLowerCase().endsWith('.md')) {
+      logI18n('must_be_md', {}, 'error');
+      rl.close();
+      return;
+    }
+    mdFiles = [target];
+  } else if (stat.isDirectory()) {
+    mdFiles = walkMdFiles(target);
+  } else {
+    logI18n('invalid_path', {}, 'error');
+    rl.close();
+    return;
+  }
+
+  if (mdFiles.length === 0) {
+    logI18n('merge_no_files', { path: target }, 'warn');
+    rl.close();
+    return;
+  }
+
+  // Urutkan natural berdasarkan path
+  mdFiles.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+  logI18n('merge_processing', { count: mdFiles.length }, 'info');
+
+  // Tentukan output path
+  const outPath = path.resolve(process.cwd(), outputFile);
+  if (fs.existsSync(outPath) && !force) {
+    const ans = await question(t('file_exists', { file: path.basename(outPath) }));
+    if (ans.toLowerCase() !== 'y') {
+      logI18n('cancelled', {}, 'warn');
+      rl.close();
+      return;
+    }
+  }
+
+  // Baca dan gabungkan konten
+  let mergedContent = '';
+  for (const file of mdFiles) {
+    const content = fs.readFileSync(file, 'utf8');
+    if (mergedContent) mergedContent += '\n\n'; // pisahkan dengan dua newline
+    mergedContent += content;
+  }
+
+  fs.writeFileSync(outPath, mergedContent, 'utf8');
+  logI18n('merge_created', { file: outPath }, 'success');
+  logI18n('merge_summary', { count: mdFiles.length, output: path.basename(outPath) }, 'info');
+
   rl.close();
 }
 
@@ -2448,6 +2745,18 @@ async function main() {
   // convertchx (alias)
   if (command === 'convertchx') {
     await cmdConvertX(args[1], TurndownService);
+    return;
+  }
+
+  // split
+  if (command === 'split') {
+    await cmdSplit(args.slice(1));
+    return;
+  }
+
+  // merge
+  if (command === 'merge') {
+    await cmdMerge(args.slice(1));
     return;
   }
 
