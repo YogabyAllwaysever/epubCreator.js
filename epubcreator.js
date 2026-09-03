@@ -2,7 +2,7 @@
 /**
  * epubcreator.js — Node CLI untuk kompilasi direktori ke EPUB
  *
- * Versi: 2.8.5 (added merge command)
+ * Versi: 2.9.0 (added debug command)
  *
  *  Copyright (C) 2026 YogabyAllwaysever.
  *
@@ -17,6 +17,7 @@
  *   node epubcreator.js split <path>        → pecah file .md berdasarkan heading ##
  *   node epubcreator.js merge <path>        → gabungkan file .md menjadi satu (kebalikan split)
  *   node epubcreator.js build               → build EPUB dari direktori saat ini
+ *   node epubcreator.js debug               → pantau perubahan di Markdowns/, auto convertch + build
  *   node epubcreator.js import              → impor file .epub dari direktori saat ini
  *   node epubcreator.js updatemodule        → download/update node_modules dari repo
  *   node epubcreator.js updatemodule --force→ update tanpa konfirmasi
@@ -31,7 +32,7 @@
  *   - Jika tidak ada, urutkan otomatis berdasarkan nama file (natural sort)
  */
 
-const VERSION = '2.8.5';
+const VERSION = '2.9.0';
 
 const fs = require('fs');
 const path = require('path');
@@ -173,9 +174,17 @@ const messages = {
     validate_ok: '✅ Validasi lulus untuk {file}',
     validate_fail: '❌ Validasi gagal:\n{output}',
 
+    // debug
+    debug_usage: 'node epubcreator.js debug  → Pantau perubahan di Markdowns/, otomatis convertch + build',
+    debug_start: 'Memantau Markdowns/ untuk perubahan... Tekan Ctrl+C untuk berhenti.',
+    debug_change: 'Perubahan terdeteksi, membangun ulang...',
+    debug_error: 'Error saat membangun ulang: {error}',
+    debug_watch_fallback: 'Peringatan: watch rekursif tidak didukung, hanya memantau direktori utama (perubahan di subdirektori mungkin tidak terdeteksi).',
+    debug_watching_again: 'Memantau lagi...',
+
     // command unknown
     unknown_command: 'Perintah tidak dikenal: {cmd}',
-    usage_hint: 'Gunakan: createconfig | createchapter | createdir | convertch | conv | split | merge | build | import | updatemodule | lang-id | lang-en | validate | --version',
+    usage_hint: 'Gunakan: createconfig | createchapter | createdir | convertch | conv | split | merge | build | debug | import | updatemodule | lang-id | lang-en | validate | --version',
 
     // Help
     help_title: '📚 epubcreator — CLI untuk kompilasi direktori ke EPUB  (v{version})',
@@ -190,6 +199,7 @@ const messages = {
   node epubcreator.js split <path>        Pecah file .md berdasarkan heading ##
   node epubcreator.js merge <path>        Gabungkan file .md menjadi satu (kebalikan split)
   node epubcreator.js build               Build EPUB dari direktori saat ini
+  node epubcreator.js debug               Pantau perubahan di Markdowns/, auto convertch + build
   node epubcreator.js import              Impor file .epub dari direktori saat ini
   node epubcreator.js updatemodule        Download/update node_modules dari repo
   node epubcreator.js updatemodule --force Update tanpa konfirmasi
@@ -349,9 +359,17 @@ Untuk validasi: install epubcheck (https://github.com/w3c/epubcheck)
     validate_ok: '✅ Validation passed for {file}',
     validate_fail: '❌ Validation failed:\n{output}',
 
+    // debug
+    debug_usage: 'node epubcreator.js debug  → Watch changes in Markdowns/, auto convertch + build',
+    debug_start: 'Watching Markdowns/ for changes... Press Ctrl+C to stop.',
+    debug_change: 'Changes detected, rebuilding...',
+    debug_error: 'Error during rebuild: {error}',
+    debug_watch_fallback: 'Warning: recursive watch not supported, watching root directory only (subdirectory changes may not trigger).',
+    debug_watching_again: 'Watching again...',
+
     // command unknown
     unknown_command: 'Unknown command: {cmd}',
-    usage_hint: 'Use: createconfig | createchapter | createdir | convertch | conv | split | merge | build | import | updatemodule | lang-id | lang-en | validate | --version',
+    usage_hint: 'Use: createconfig | createchapter | createdir | convertch | conv | split | merge | build | debug | import | updatemodule | lang-id | lang-en | validate | --version',
 
     // Help
     help_title: '📚 epubcreator — CLI for compiling directory to EPUB  (v{version})',
@@ -366,6 +384,7 @@ Untuk validasi: install epubcheck (https://github.com/w3c/epubcheck)
   node epubcreator.js split <path>        Split .md file by heading ##
   node epubcreator.js merge <path>        Merge .md files into one (reverse of split)
   node epubcreator.js build               Build EPUB from current directory
+  node epubcreator.js debug               Watch changes in Markdowns/, auto convertch + build
   node epubcreator.js import              Import .epub file from current directory
   node epubcreator.js updatemodule        Download/update node_modules from repo
   node epubcreator.js updatemodule --force Update without confirmation
@@ -1232,6 +1251,21 @@ async function convertOneMdFile(mdFile, outputDir, force = false, marked) {
   return true;
 }
 
+// ─── Konversi semua .md di direktori (tanpa interaksi) ──────────────
+async function convertAllMd(markdownsDir, epubDir, force, marked) {
+  const mdFiles = walkMdFiles(markdownsDir);
+  if (mdFiles.length === 0) {
+    logI18n('no_md_found', {}, 'warn');
+    return;
+  }
+  let successCount = 0;
+  for (const md of mdFiles) {
+    const ok = await convertOneMdFile(md, epubDir, force, marked);
+    if (ok) successCount++;
+  }
+  logI18n('convert_summary', { success: successCount, total: mdFiles.length }, 'info');
+}
+
 // ─── Command: MD → XHTML (perilaku lama convertch) ────────────────────
 async function cmdConvertCh(filePath, force = false, marked) {
   let target;
@@ -1782,7 +1816,210 @@ async function cmdMerge(argv) {
   rl.close();
 }
 
-// ─── Command: build ────────────────────────────────────────────────────
+// ─── Build core (tanpa interaksi) ─────────────────────────────────────
+async function buildEpub(archiver) {
+  const cwd = process.cwd();
+  const rootName = path.basename(cwd);
+
+  const configPath = path.join(cwd, 'config.txt');
+  if (!fs.existsSync(configPath)) {
+    logI18n('config_not_found', {}, 'error');
+    return;
+  }
+
+  const epubDir = path.join(cwd, 'EPUB');
+  if (!fs.existsSync(epubDir)) {
+    logI18n('epub_dir_not_found', {}, 'error');
+    return;
+  }
+
+  const config = parseConfig(configPath);
+  if (!config.title) {
+    logI18n('title_missing', {}, 'error');
+    return;
+  }
+  if (!config.author) {
+    logI18n('author_missing', {}, 'error');
+    return;
+  }
+
+  const ordPath = path.join(cwd, 'ord.txt');
+  const chapters = collectChapters(epubDir, ordPath);
+  if (chapters.length === 0) {
+    logI18n('no_chapters', {}, 'error');
+    return;
+  }
+  logI18n('chapters_found', { count: chapters.length }, 'info');
+
+  const media = collectMedia(epubDir);
+  if (!media.cover) {
+    logI18n('cover_missing', {}, 'warn');
+  } else {
+    logI18n('cover_found', { file: media.cover }, 'info');
+  }
+  logI18n('media_summary', { images: media.images.length, audio: media.audio.length }, 'info');
+
+  const buildsDir = path.join(cwd, 'builds');
+  ensureDir(buildsDir);
+
+  const epubFilename = `${rootName}.epub`;
+  const epubPath = path.join(buildsDir, epubFilename);
+
+  const opfContent = generateOpf(
+    {
+      mainTitle: config.title,
+      subTitle: config.subtitle,
+      volume: config.volume,
+      creator: config.author,
+      language: config.language,
+      identifier: config.identifier,
+      date: config.date,
+      publisher: config.publisher,
+      description: config.description,
+      subjects: config.subjects,
+      seriesName: config.series_name,
+      seriesNumber: config.series_number,
+      contributors: config.contributors,
+      extraTitles: config.extra_titles,
+    },
+    chapters,
+    media
+  );
+
+  const tocContent = generateToc(chapters);
+  const coverContent = generateCoverXhtml(media.cover);
+  const containerContent = generateContainer();
+
+  const output = fs.createWriteStream(epubPath);
+  const archive = archiver('zip', {
+    zlib: { level: 6 },
+  });
+
+  return new Promise((resolve, reject) => {
+    output.on('close', () => {
+      const size = (archive.pointer() / 1024).toFixed(1);
+      logI18n('epub_built', { path: epubPath, size }, 'success');
+      resolve();
+    });
+
+    archive.on('error', (err) => {
+      logI18n('zip_error', { error: err.message }, 'error');
+      reject(err);
+    });
+
+    archive.pipe(output);
+    archive.append('application/epub+zip', { name: 'mimetype', store: true });
+    archive.append(containerContent, { name: 'META-INF/container.xml' });
+    archive.append(opfContent, { name: 'EPUB/volume.opf' });
+    archive.append(tocContent, { name: 'EPUB/toc.xhtml' });
+    archive.append(coverContent, { name: 'EPUB/cover.xhtml' });
+
+    const excludeGenerated = ['cover.xhtml', 'toc.xhtml', 'volume.opf'];
+    const allEpubFiles = fs.readdirSync(epubDir);
+    for (const item of allEpubFiles) {
+      const srcPath = path.join(epubDir, item);
+      const stat = fs.statSync(srcPath);
+      if (stat.isDirectory()) continue;
+      if (excludeGenerated.includes(item)) continue;
+      archive.file(srcPath, { name: `EPUB/${item}` });
+    }
+
+    const subdirs = ['images', 'audiovideo'];
+    for (const sub of subdirs) {
+      const subDir = path.join(epubDir, sub);
+      if (fs.existsSync(subDir)) {
+        const files = fs.readdirSync(subDir);
+        for (const f of files) {
+          const src = path.join(subDir, f);
+          if (fs.statSync(src).isFile()) {
+            archive.file(src, { name: `EPUB/${sub}/${f}` });
+          }
+        }
+      }
+    }
+
+    for (const ch of chapters) {
+      const src = path.join(epubDir, ch.path);
+      if (fs.existsSync(src) && !allEpubFiles.includes(ch.path)) {
+        archive.file(src, { name: `EPUB/${ch.path}` });
+      }
+    }
+
+    archive.finalize();
+  });
+}
+
+// ─── Command: build (CLI) ─────────────────────────────────────────────
+async function cmdBuild(archiver) {
+  await buildEpub(archiver);
+  rl.close();
+}
+
+// ─── Command: debug (watch mode) ──────────────────────────────────────
+async function cmdDebug(archiver, marked) {
+  const markdownsDir = path.join(process.cwd(), 'Markdowns');
+  const epubDir = path.join(process.cwd(), 'EPUB');
+
+  if (!fs.existsSync(markdownsDir)) {
+    logI18n('markdowns_not_found', {}, 'error');
+    rl.close();
+    return;
+  }
+  if (!fs.existsSync(epubDir)) {
+    logI18n('epub_dir_not_found', {}, 'error');
+    rl.close();
+    return;
+  }
+
+  logI18n('debug_start', {}, 'info');
+
+  let debounceTimer = null;
+  const debounceDelay = 500; // ms
+
+  const onChange = () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(async () => {
+      debounceTimer = null;
+      logI18n('debug_change', {}, 'info');
+      try {
+        // Convert all .md files
+        await convertAllMd(markdownsDir, epubDir, true, marked);
+        // Build
+        await buildEpub(archiver);
+        logI18n('debug_watching_again', {}, 'info');
+      } catch (err) {
+        logI18n('debug_error', { error: err.message }, 'error');
+      }
+    }, debounceDelay);
+  };
+
+  // Watch for changes
+  let watcher;
+  try {
+    watcher = fs.watch(markdownsDir, { recursive: true }, (eventType, filename) => {
+      if (filename && !filename.endsWith('.md')) return;
+      onChange();
+    });
+  } catch (err) {
+    // Recursive not supported, fallback to watch root only
+    logI18n('debug_watch_fallback', {}, 'warn');
+    watcher = fs.watch(markdownsDir, (eventType, filename) => {
+      if (filename && !filename.endsWith('.md')) return;
+      onChange();
+    });
+  }
+
+  // Handle Ctrl+C
+  const onExit = () => {
+    if (watcher) watcher.close();
+    rl.close();
+    process.exit(0);
+  };
+  process.on('SIGINT', onExit);
+  // Keep the process alive
+}
+
+// ─── Parsing config ────────────────────────────────────────────────────
 function parseConfig(configPath) {
   const content = fs.readFileSync(configPath, 'utf8');
   const lines = content.split('\n');
@@ -2115,145 +2352,6 @@ function generateContainer() {
   </rootfiles>
 </container>
 `;
-}
-
-async function cmdBuild(archiver) {
-  const cwd = process.cwd();
-  const rootName = path.basename(cwd);
-
-  const configPath = path.join(cwd, 'config.txt');
-  if (!fs.existsSync(configPath)) {
-    logI18n('config_not_found', {}, 'error');
-    rl.close();
-    return;
-  }
-
-  const epubDir = path.join(cwd, 'EPUB');
-  if (!fs.existsSync(epubDir)) {
-    logI18n('epub_dir_not_found', {}, 'error');
-    rl.close();
-    return;
-  }
-
-  const config = parseConfig(configPath);
-  if (!config.title) {
-    logI18n('title_missing', {}, 'error');
-    rl.close();
-    return;
-  }
-  if (!config.author) {
-    logI18n('author_missing', {}, 'error');
-    rl.close();
-    return;
-  }
-
-  const ordPath = path.join(cwd, 'ord.txt');
-  const chapters = collectChapters(epubDir, ordPath);
-  if (chapters.length === 0) {
-    logI18n('no_chapters', {}, 'error');
-    rl.close();
-    return;
-  }
-  logI18n('chapters_found', { count: chapters.length }, 'info');
-
-  const media = collectMedia(epubDir);
-  if (!media.cover) {
-    logI18n('cover_missing', {}, 'warn');
-  } else {
-    logI18n('cover_found', { file: media.cover }, 'info');
-  }
-  logI18n('media_summary', { images: media.images.length, audio: media.audio.length }, 'info');
-
-  const buildsDir = path.join(cwd, 'builds');
-  ensureDir(buildsDir);
-
-  const epubFilename = `${rootName}.epub`;
-  const epubPath = path.join(buildsDir, epubFilename);
-
-  const opfContent = generateOpf(
-    {
-      mainTitle: config.title,
-      subTitle: config.subtitle,
-      volume: config.volume,
-      creator: config.author,
-      language: config.language,
-      identifier: config.identifier,
-      date: config.date,
-      publisher: config.publisher,
-      description: config.description,
-      subjects: config.subjects,
-      seriesName: config.series_name,
-      seriesNumber: config.series_number,
-      contributors: config.contributors,
-      extraTitles: config.extra_titles,
-    },
-    chapters,
-    media
-  );
-
-  const tocContent = generateToc(chapters);
-  const coverContent = generateCoverXhtml(media.cover);
-  const containerContent = generateContainer();
-
-  const output = fs.createWriteStream(epubPath);
-  const archive = archiver('zip', {
-    zlib: { level: 6 },
-  });
-
-  return new Promise((resolve, reject) => {
-    output.on('close', () => {
-      const size = (archive.pointer() / 1024).toFixed(1);
-      logI18n('epub_built', { path: epubPath, size }, 'success');
-      rl.close();
-      resolve();
-    });
-
-    archive.on('error', (err) => {
-      logI18n('zip_error', { error: err.message }, 'error');
-      reject(err);
-      rl.close();
-    });
-
-    archive.pipe(output);
-    archive.append('application/epub+zip', { name: 'mimetype', store: true });
-    archive.append(containerContent, { name: 'META-INF/container.xml' });
-    archive.append(opfContent, { name: 'EPUB/volume.opf' });
-    archive.append(tocContent, { name: 'EPUB/toc.xhtml' });
-    archive.append(coverContent, { name: 'EPUB/cover.xhtml' });
-
-    const excludeGenerated = ['cover.xhtml', 'toc.xhtml', 'volume.opf'];
-    const allEpubFiles = fs.readdirSync(epubDir);
-    for (const item of allEpubFiles) {
-      const srcPath = path.join(epubDir, item);
-      const stat = fs.statSync(srcPath);
-      if (stat.isDirectory()) continue;
-      if (excludeGenerated.includes(item)) continue;
-      archive.file(srcPath, { name: `EPUB/${item}` });
-    }
-
-    const subdirs = ['images', 'audiovideo'];
-    for (const sub of subdirs) {
-      const subDir = path.join(epubDir, sub);
-      if (fs.existsSync(subDir)) {
-        const files = fs.readdirSync(subDir);
-        for (const f of files) {
-          const src = path.join(subDir, f);
-          if (fs.statSync(src).isFile()) {
-            archive.file(src, { name: `EPUB/${sub}/${f}` });
-          }
-        }
-      }
-    }
-
-    for (const ch of chapters) {
-      const src = path.join(epubDir, ch.path);
-      if (fs.existsSync(src) && !allEpubFiles.includes(ch.path)) {
-        archive.file(src, { name: `EPUB/${ch.path}` });
-      }
-    }
-
-    archive.finalize();
-  });
 }
 
 // ─── Command: import ───────────────────────────────────────────────────
@@ -2763,6 +2861,12 @@ async function main() {
   // build
   if (command === 'build') {
     await cmdBuild(archiver);
+    return;
+  }
+
+  // debug
+  if (command === 'debug') {
+    await cmdDebug(archiver, marked);
     return;
   }
 

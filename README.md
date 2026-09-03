@@ -1,9 +1,9 @@
-![epubcreator logo](assets/icons/icon-name.png)  
+![epubcreator logo](assets/icons/icon-name-badge.png)  
 📚 epubCreator
 
 CLI tool for compiling a directory into an EPUB ebook
 
-Version: 2.8.5
+Version: 2.9.0
 
 ---
 
@@ -17,6 +17,7 @@ Version: 2.8.5
 - ✂️ **Split** Markdown files by headings (`##`) into multiple files
 - 🔗 **Merge** multiple Markdown files into one (reverse of split)
 - 📥 **Import existing EPUB** – extract chapters, metadata, cover, and media into the project structure
+- 🔍 **Debug mode** – watch Markdowns/ for changes and auto-rebuild
 - 📦 **Auto‑download dependencies** – fetch and extract pre‑built `node_modules` from the repository
 - 🌍 Multilingual support (Indonesian & English)
 - 📋 Chapter order control via optional ord.txt
@@ -78,6 +79,8 @@ Split a Markdown file into multiple files by heading level 2 (##)
 Merge multiple Markdown files into one (reverse of split)
 · build
 Build EPUB from current directory
+· debug
+Watch Markdowns/ for changes; auto-convert .md → .xhtml and rebuild on every change
 · import [options]
 Import an existing .epub file from the current directory into the project structure
 · updatemodule [--force]
@@ -100,7 +103,7 @@ Options for convertch docx2md:
 · --force, -f – Overwrite existing .md files without asking.
 · --output <dir> – Output directory (default: Markdowns/fromdocx).
 · --no-images – Suppress warning about unsupported image extraction (currently images are ignored anyway).
-· --nosplit, -n – Do not split by headings; output a single .md file per .docx (new).
+· --nosplit, -n – Do not split by headings; output a single .md file per .docx.
 
 Options for split:
 
@@ -259,6 +262,27 @@ merge — Merge Markdown Files
 · Files are combined in natural (numeric-aware) order.
 · Useful to reverse the split operation or to combine chapter files.
 · Supports --output and --force.
+
+---
+
+🔍 Debug Mode (watch & auto-rebuild)
+
+The debug command watches the Markdowns/ directory for any changes (add, modify, delete) and automatically:
+
+1. Converts all .md files to .xhtml (force overwrite)
+2. Builds the EPUB
+
+This is useful for iterative writing: edit your .md files, save, and the EPUB is rebuilt automatically.
+
+Usage:
+
+```bash
+node epubcreator.js debug
+```
+
+· Runs until you press Ctrl+C.
+· Uses a 500ms debounce to avoid excessive rebuilds during rapid edits.
+· Works on the current directory.
 
 ---
 
@@ -448,6 +472,13 @@ node epubcreator.js conv xhtml2md ./EPUB/custom
 
 ```bash
 node epubcreator.js updatemodule
+```
+
+11. Debug / auto-rebuild
+
+```bash
+# Watch Markdowns/ and rebuild on every change
+node epubcreator.js debug
 ```
 
 ---
