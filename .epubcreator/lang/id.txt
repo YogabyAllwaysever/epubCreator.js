@@ -1,0 +1,159 @@
+lang_changed = Bahasa diubah ke {lang}.
+lang_saved = Bahasa disimpan ke {file}.
+missing_dep = ❌ Modul "{mod}" (v{version}) tidak ditemukan. Instal dengan:\n  npm install {mod}@{version}\n
+marked_old = ❌ Versi "marked" terlalu lama. Instal ulang dengan:\n  npm install marked@4.0.0\n
+cancelled = Dibatalkan.
+file_exists = {file} sudah ada. Timpa? (y/n) 
+overwritten = {file} ditimpa.
+not_modified = {file} tidak diubah.
+created = {file} dibuat.
+dir_created = Struktur direktori dibuat di {dirs}
+ready = ✅ Direktori dan file template siap.
+markdowns_not_found = Direktori Markdowns/ tidak ditemukan. Buat dengan "node epubcreator.js createdir"
+path_not_found = Jalur tidak ditemukan: {path}
+must_be_md = File harus memiliki ekstensi .md
+no_md_found = Tidak ada file .md ditemukan di direktori itu.
+md_count = Ditemukan {count} file .md.
+xhtml_exists = {count} file .xhtml sudah ada. (Y) Timpa semua, (N) Salin semua ke Markdowns, (C) Batal: 
+convert_cancelled = Konversi dibatalkan.
+copy_md = 📋 Salin {file} ke {dest}
+md_already_exists = ℹ️  {file} sudah ada di Markdowns, lewati penyalinan.
+copy_done = Selesai: {count} file .md disalin ke Markdowns/.
+skip_file = Melewati {file}
+convert_success = ✅ Berhasil dikonversi: {file}
+convert_fail = Gagal mengurai Markdown {file}: {error}
+convert_summary = Selesai: {success} dari {total} file berhasil dikonversi.
+invalid_path = Jalur bukan file atau direktori yang valid.
+xhtml_already_exists = {file} sudah ada. (Y) Timpa, (N) Salin ke Markdowns, (C) Batal: 
+epub_not_found = Direktori EPUB/ tidak ditemukan.
+must_be_xhtml = File harus memiliki ekstensi .xhtml
+skip_cover = Melewati {file} (dikecualikan)
+no_xhtml_found = Tidak ada file .xhtml yang valid ditemukan di direktori itu.
+xhtml_count = Ditemukan {count} file .xhtml.
+convertx_success = ✅ Berhasil dikonversi: {file}
+convertx_fail = Gagal mengkonversi {file}: {error}
+convertx_summary = Selesai: {success} dari {total} file berhasil dikonversi.
+docx_no_files = Tidak ada file .docx ditemukan.
+docx_processing = 📄 Memproses: {file}
+docx_no_images = ℹ️ Ekstraksi gambar dari DOCX belum didukung; gambar akan diabaikan.
+docx_heading_mode_warn = ⚠️ Mode heading berdasarkan ukuran font digunakan (dengan ambang batas yang dikonfigurasi).
+docx_nosplit_mode = ℹ️ Mode tanpa pemisahan (--nosplit) aktif, semua konten akan digabung menjadi satu file.
+split_usage = node epubcreator.js split <jalur> [--output dir] [--force]
+split_processing = Memproses {file} ...
+split_no_heading = Tidak ada heading level 2 (##) ditemukan di {file}, seluruh konten disimpan sebagai satu file.
+split_parts = Dibagi menjadi {count} bagian.
+split_created = File dibuat: {file}
+split_summary = Selesai: {success} dari {total} file berhasil diproses.
+split_output_dir = Direktori keluaran: {dir}
+merge_usage = node epubcreator.js merge <jalur> [--output file] [--force]
+merge_no_files = Tidak ada file .md ditemukan di {path}.
+merge_processing = Menggabungkan {count} file ...
+merge_created = File gabungan dibuat: {file}
+merge_summary = ✅ {count} file berhasil digabung menjadi {output}.
+merge_output_file = Keluaran: {file}
+config_not_found = config.txt tidak ditemukan! Jalankan: node epubcreator.js createdir
+epub_dir_not_found = Direktori EPUB/ tidak ditemukan!
+title_missing = config.txt harus memiliki "title"
+author_missing = config.txt harus memiliki "author"
+no_chapters = Tidak ada bab (file .xhtml) ditemukan di EPUB/ (tidak termasuk cover/toc/nav)
+chapters_found = Ditemukan {count} bab.
+cover_missing = ⚠️  Tidak ada cover.png ditemukan di EPUB/images/ — cover akan tanpa gambar.
+cover_found = Sampul: {file}
+media_summary = Gambar: {images} | Audio/Video: {audio}
+epub_built = ✅ EPUB berhasil dibuat: {path} ({size} KB)
+zip_error = Gagal membuat ZIP: {error}
+warning_ord_not_found = Peringatan: file "{file}" di ord.txt tidak ditemukan di EPUB/
+import_no_epub = Tidak ada file .epub ditemukan di direktori ini.
+import_select = Pilih file EPUB untuk diimpor:
+import_select_prompt = Masukkan nomor (1-{count}): 
+import_invalid_choice = Pilihan tidak valid.
+import_extracting = 📦 Mengekstrak {file} ...
+import_done = ✅ Impor selesai.
+import_summary =    Bab: {chapters}, Gambar: {images}, Audio/Video: {audio}
+import_hint = 💡 Jalankan "node epubcreator.js convertch xhtml2md" untuk mengonversi .xhtml ke .md jika diperlukan.
+import_skip_non_spine = Melewati file non-bab: {file}
+import_cover_found = Sampul ditemukan: {file}
+import_force_overwrite = Menimpa file yang ada (--force).
+node_modules_missing = node_modules tidak ditemukan.
+download_confirm = Unduh dependensi bawaan dari repositori? (y/n) 
+extract_no_assets = ❌ Folder assets/node_modules tidak ditemukan di arsip.
+download_start = 📥 Mengunduh bundel ...
+download_complete = ✅ Unduhan selesai. Mengekstrak ...
+download_failed = ❌ Gagal mengunduh bundel: {error}
+extract_failed = ❌ Gagal mengekstrak node_modules: {error}
+extract_success = ✅ node_modules berhasil diekstrak.
+tar_not_found = ❌ Perintah "tar" tidak ditemukan. Pastikan tar terinstal (Linux/macOS/Termux) atau gunakan Git Bash di Windows.
+update_confirm = Ini akan mengganti folder node_modules Kamu yang ada. Lanjutkan? (y/n) 
+update_force = Menimpa node_modules (--force).
+validate_no_epub = Tidak ada file .epub ditemukan di builds/
+validate_start = 🔍 Memvalidasi {file} ...
+validate_ok = ✅ Validasi lulus untuk {file}
+validate_fail = ❌ Validasi gagal:\n{output}
+debug_usage = node epubcreator.js debug  → Pantau perubahan di Markdowns/, otomatis convertch + build
+debug_start = Memantau Markdowns/ untuk perubahan... Tekan Ctrl+C untuk berhenti.
+debug_change = Perubahan terdeteksi, membangun ulang...
+debug_error = Error saat membangun ulang: {error}
+debug_watch_fallback = Peringatan: pantauan rekursif tidak didukung, hanya memantau direktori root (perubahan subdirektori mungkin tidak terpicu).
+debug_watching_again = Memantau lagi...
+settings_title = === .epubcreator/settings.txt ===
+settings_prompt = Tekan Enter untuk mempertahankan nilai Kamu saat ini, atau ketik nilai baru. Ketik "save" untuk menyimpan, "cancel" untuk membatalkan.
+settings_saved = ✅ Pengaturan disimpan ke {file}.
+settings_cancelled = Pengaturan dibatalkan.
+settings_invalid_value = Nilai tidak valid. Mempertahankan sebelumnya.
+updateconfig_confirm = Ini akan mengganti folder .epubcreator Kamu yang ada. Lanjutkan? (y/n) 
+updateconfig_force = Menimpa .epubcreator (--force).
+updateconfig_fetching = 📥 Mengunduh bundel konfigurasi dari cabang config...
+updateconfig_extracting = Mengekstrak konfigurasi...
+updateconfig_success = ✅ .epubcreator berhasil diperbarui.
+updateconfig_no_assets = ❌ Folder .epubcreator tidak ditemukan di arsip.
+updateconfig_failed = ❌ Gagal memperbarui konfigurasi: {error}
+createdir_update_config = Memperbarui .epubcreator dari cabang config...
+createdir_skip_update = Melewati pembaruan .epubcreator.
+unknown_command = Perintah tidak dikenal: {cmd}
+usage_hint = Gunakan: createdir | convertch | conv | split | merge | build | debug | import | updatemodule | updateconfig | settings | validate | --version
+help_title = 📚 epubcreator — CLI untuk mengkompilasi direktori ke EPUB  (v{version})
+help_commands = 
+  node epubcreator.js createdir           Buat struktur direktori dan unduh konfigurasi alat
+  node epubcreator.js convertch           Konversi .md → .xhtml (default, cari di Markdowns/)
+  node epubcreator.js convertch xhtml2md  Konversi .xhtml → .md
+  node epubcreator.js convertch docx2md   Konversi .docx → .md (pisah berdasarkan ##)
+  node epubcreator.js conv ...            Alias untuk convertch
+  node epubcreator.js split <path>        Pecah file .md berdasarkan heading ##
+  node epubcreator.js merge <path>        Gabungkan file .md menjadi satu (kebalikan dari split)
+  node epubcreator.js build               Bangun EPUB dari direktori saat ini
+  node epubcreator.js debug               Pantau perubahan di Markdowns/, otomatis convertch + build
+  node epubcreator.js import              Impor file .epub dari direktori saat ini
+  node epubcreator.js updatemodule        Unduh/perbarui node_modules dari repositori
+  node epubcreator.js updatemodule --force Perbarui tanpa konfirmasi
+  node epubcreator.js updateconfig        Unduh/perbarui .epubcreator dari repositori (cabang config)
+  node epubcreator.js settings            Pengaturan alat interaktif
+  node epubcreator.js validate            Validasi EPUB terbaru dengan epubcheck
+  node epubcreator.js --version           Tampilkan versi
+help_structure = 
+Struktur direktori:
+  ./
+  ├── config.txt          ← metadata buku (wajib)
+  ├── ord.txt             ← daftar urutan bab (opsional)
+  ├── Docs/               ← file .docx sumber (untuk docx2md)
+  ├── Markdowns/          ← file .md sumber (untuk convertch)
+  ├── node_modules/       ← dependensi (diunduh otomatis via updatemodule)
+  ├── .epubcreator/       ← pengaturan alat dan file bahasa (diunduh otomatis via createdir/updateconfig)
+  │   ├── settings.txt
+  │   └── lang/
+  │       ├── en.txt
+  │       └── id.txt
+  ├── EPUB/
+  │   ├── images/
+  │   │   └── cover.png   ← WAJIB
+  │   ├── audiovideo/     ← opsional
+  │   ├── bab1.xhtml      ← bab (nama apa saja, di root EPUB/)
+  │   └── ...
+  └── builds/
+      └── [nama-folder].epub   ← hasil build
+help_deps = 
+Catatan: pastikan dependensi utama terinstal:
+  npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4
+Untuk fitur DOCX:  npm install mammoth@1.6.0 (opsional)
+Untuk fitur impor: npm install adm-zip@0.5.10 xml2js@0.5.0 (opsional)
+Untuk validasi: instal epubcheck (https://github.com/w3c/epubcheck)
+  Atau jalankan "node epubcreator.js updatemodule" untuk mengunduh secara otomatis.

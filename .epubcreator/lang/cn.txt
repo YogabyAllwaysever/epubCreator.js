@@ -1,0 +1,159 @@
+lang_changed = 语言已更改为 {lang}.
+lang_saved = 语言已保存到 {file}.
+missing_dep = ❌ 模块 "{mod}" (v{version}) 未找到。请使用以下命令安装：\n  npm install {mod}@{version}\n
+marked_old = ❌ "marked" 版本过旧。请使用以下命令重新安装：\n  npm install marked@4.0.0\n
+cancelled = 已取消。
+file_exists = {file} 已存在。是否覆盖？(y/n) 
+overwritten = {file} 已覆盖。
+not_modified = {file} 未更改。
+created = {file} 已创建。
+dir_created = 目录结构已在 {dirs} 创建
+ready = ✅ 目录和模板文件已就绪。
+markdowns_not_found = 未找到 Markdowns/ 目录。请使用 "node epubcreator.js createdir" 创建。
+path_not_found = 路径未找到：{path}
+must_be_md = 文件必须具有 .md 扩展名
+no_md_found = 在该目录中未找到 .md 文件。
+md_count = 找到 {count} 个 .md 文件。
+xhtml_exists = 已有 {count} 个 .xhtml 文件。(Y) 覆盖全部，(N) 全部复制到 Markdowns，(C) 取消： 
+convert_cancelled = 转换已取消。
+copy_md = 📋 复制 {file} 到 {dest}
+md_already_exists = ℹ️  {file} 在 Markdowns 中已存在，跳过复制。
+copy_done = 完成：已将 {count} 个 .md 文件复制到 Markdowns/。
+skip_file = 跳过 {file}
+convert_success = ✅ 转换成功：{file}
+convert_fail = 解析 Markdown {file} 失败：{error}
+convert_summary = 完成：{total} 个文件中成功转换 {success} 个。
+invalid_path = 路径不是有效的文件或目录。
+xhtml_already_exists = {file} 已存在。(Y) 覆盖，(N) 复制到 Markdowns，(C) 取消： 
+epub_not_found = 未找到 EPUB/ 目录。
+must_be_xhtml = 文件必须具有 .xhtml 扩展名
+skip_cover = 跳过 {file}（已排除）
+no_xhtml_found = 在该目录中未找到有效的 .xhtml 文件。
+xhtml_count = 找到 {count} 个 .xhtml 文件。
+convertx_success = ✅ 转换成功：{file}
+convertx_fail = 转换 {file} 失败：{error}
+convertx_summary = 完成：{total} 个文件中成功转换 {success} 个。
+docx_no_files = 未找到 .docx 文件。
+docx_processing = 📄 正在处理：{file}
+docx_no_images = ℹ️ 尚不支持从 DOCX 提取图像；图像将被忽略。
+docx_heading_mode_warn = ⚠️ 正在使用基于字体大小的标题模式（使用配置的阈值）。
+docx_nosplit_mode = ℹ️ 无拆分模式（--nosplit）已激活，所有内容将合并到一个文件中。
+split_usage = node epubcreator.js split <路径> [--output 目录] [--force]
+split_processing = 正在处理 {file} ...
+split_no_heading = 在 {file} 中未找到二级标题（##），整个内容保存为一个文件。
+split_parts = 拆分为 {count} 个部分。
+split_created = 文件已创建：{file}
+split_summary = 完成：{total} 个文件中成功处理 {success} 个。
+split_output_dir = 输出目录：{dir}
+merge_usage = node epubcreator.js merge <路径> [--output 文件] [--force]
+merge_no_files = 在 {path} 中未找到 .md 文件。
+merge_processing = 正在合并 {count} 个文件 ...
+merge_created = 合并文件已创建：{file}
+merge_summary = ✅ 成功将 {count} 个文件合并为 {output}。
+merge_output_file = 输出：{file}
+config_not_found = 未找到 config.txt！请运行：node epubcreator.js createdir
+epub_dir_not_found = 未找到 EPUB/ 目录！
+title_missing = config.txt 必须包含 "title"
+author_missing = config.txt 必须包含 "author"
+no_chapters = 在 EPUB/ 中未找到章节（.xhtml 文件）（不包括 cover/toc/nav）
+chapters_found = 找到 {count} 个章节。
+cover_missing = ⚠️  在 EPUB/images/ 中未找到 cover.png — 封面将没有图像。
+cover_found = 封面：{file}
+media_summary = 图像：{images} | 音频/视频：{audio}
+epub_built = ✅ EPUB 构建成功：{path}（{size} KB）
+zip_error = 创建 ZIP 失败：{error}
+warning_ord_not_found = 警告：ord.txt 中的文件 "{file}" 在 EPUB/ 中未找到
+import_no_epub = 在此目录中未找到 .epub 文件。
+import_select = 选择要导入的 EPUB 文件：
+import_select_prompt = 输入数字（1-{count}）： 
+import_invalid_choice = 无效选择。
+import_extracting = 📦 正在解压 {file} ...
+import_done = ✅ 导入完成。
+import_summary =    章节：{chapters}，图像：{images}，音频/视频：{audio}
+import_hint = 💡 如果需要，请运行 "node epubcreator.js convertch xhtml2md" 将 .xhtml 转换为 .md。
+import_skip_non_spine = 跳过非章节文件：{file}
+import_cover_found = 找到封面：{file}
+import_force_overwrite = 覆盖现有文件（--force）。
+node_modules_missing = 未找到 node_modules。
+download_confirm = 从仓库下载预构建的依赖？(y/n) 
+extract_no_assets = ❌ 在归档中未找到 assets/node_modules 文件夹。
+download_start = 📥 正在下载捆绑包 ...
+download_complete = ✅ 下载完成。正在解压 ...
+download_failed = ❌ 下载捆绑包失败：{error}
+extract_failed = ❌ 解压 node_modules 失败：{error}
+extract_success = ✅ node_modules 解压成功。
+tar_not_found = ❌ 未找到 "tar" 命令。请确保已安装 tar（Linux/macOS/Termux）或在 Windows 上使用 Git Bash。
+update_confirm = 这将替换您现有的 node_modules 文件夹。是否继续？(y/n) 
+update_force = 覆盖 node_modules（--force）。
+validate_no_epub = 在 builds/ 中未找到 .epub 文件。
+validate_start = 🔍 正在验证 {file} ...
+validate_ok = ✅ 验证通过：{file}
+validate_fail = ❌ 验证失败：\n{output}
+debug_usage = node epubcreator.js debug  → 监视 Markdowns/ 中的更改，自动 convertch + build
+debug_start = 正在监视 Markdowns/ 的更改... 按 Ctrl+C 停止。
+debug_change = 检测到更改，正在重新构建...
+debug_error = 重新构建时出错：{error}
+debug_watch_fallback = 警告：不支持递归监视，仅监视根目录（子目录更改可能不会触发）。
+debug_watching_again = 再次监视...
+settings_title = === .epubcreator/settings.txt ===
+settings_prompt = 按 Enter 键保留当前值，或输入新值。输入 "save" 保存，"cancel" 中止。
+settings_saved = ✅ 设置已保存到 {file}。
+settings_cancelled = 设置已取消。
+settings_invalid_value = 无效值。保留之前的值。
+updateconfig_confirm = 这将替换您现有的 .epubcreator 文件夹。是否继续？(y/n) 
+updateconfig_force = 覆盖 .epubcreator（--force）。
+updateconfig_fetching = 📥 正在从 config 分支下载配置捆绑包...
+updateconfig_extracting = 正在解压配置...
+updateconfig_success = ✅ .epubcreator 更新成功。
+updateconfig_no_assets = ❌ 在归档中未找到 .epubcreator 文件夹。
+updateconfig_failed = ❌ 更新配置失败：{error}
+createdir_update_config = 正在从 config 分支更新 .epubcreator...
+createdir_skip_update = 跳过 .epubcreator 更新。
+unknown_command = 未知命令：{cmd}
+usage_hint = 使用：createdir | convertch | conv | split | merge | build | debug | import | updatemodule | updateconfig | settings | validate | --version
+help_title = 📚 epubcreator — 将目录编译为 EPUB 的 CLI 工具 (v{version})
+help_commands = 
+  node epubcreator.js createdir           创建目录结构并下载工具配置
+  node epubcreator.js convertch           将 .md → .xhtml（默认，在 Markdowns/ 中查找）
+  node epubcreator.js convertch xhtml2md  将 .xhtml → .md
+  node epubcreator.js convertch docx2md   将 .docx → .md（按 ## 拆分）
+  node epubcreator.js conv ...            convertch 的别名
+  node epubcreator.js split <路径>        按标题 ## 拆分 .md 文件
+  node epubcreator.js merge <路径>        将 .md 文件合并为一个（拆分的逆操作）
+  node epubcreator.js build               从当前目录构建 EPUB
+  node epubcreator.js debug               监视 Markdowns/ 中的更改，自动 convertch + build
+  node epubcreator.js import              从当前目录导入 .epub 文件
+  node epubcreator.js updatemodule        从仓库下载/更新 node_modules
+  node epubcreator.js updatemodule --force 无需确认更新
+  node epubcreator.js updateconfig        从仓库（config 分支）下载/更新 .epubcreator
+  node epubcreator.js settings            交互式工具设置
+  node epubcreator.js validate            使用 epubcheck 验证最新的 EPUB
+  node epubcreator.js --version           显示版本
+help_structure = 
+目录结构：
+  ./
+  ├── config.txt          ← 书籍元数据（必需）
+  ├── ord.txt             ← 章节顺序列表（可选）
+  ├── Docs/               ← 源 .docx 文件（用于 docx2md）
+  ├── Markdowns/          ← 源 .md 文件（用于 convertch）
+  ├── node_modules/       ← 依赖（通过 updatemodule 自动下载）
+  ├── .epubcreator/       ← 工具设置和语言文件（通过 createdir/updateconfig 自动下载）
+  │   ├── settings.txt
+  │   └── lang/
+  │       ├── en.txt
+  │       └── id.txt
+  ├── EPUB/
+  │   ├── images/
+  │   │   └── cover.png   ← 必需
+  │   ├── audiovideo/     ← 可选
+  │   ├── bab1.xhtml      ← 章节（任意名称，在 EPUB/ 根目录下）
+  │   └── ...
+  └── builds/
+      └── [文件夹名称].epub   ← 构建结果
+help_deps = 
+注意：请确保已安装主要依赖：
+  npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4
+对于 DOCX 功能： npm install mammoth@1.6.0（可选）
+对于导入功能：npm install adm-zip@0.5.10 xml2js@0.5.0（可选）
+对于验证：安装 epubcheck (https://github.com/w3c/epubcheck)
+  或运行 "node epubcreator.js updatemodule" 自动下载。

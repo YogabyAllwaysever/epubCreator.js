@@ -1,0 +1,159 @@
+lang_changed = 言語が {lang} に変更されました。
+lang_saved = 言語が {file} に保存されました。
+missing_dep = ❌ モジュール "{mod}" (v{version}) が見つかりません。次でインストールしてください:\n  npm install {mod}@{version}\n
+marked_old = ❌ "marked" のバージョンが古すぎます。次で再インストールしてください:\n  npm install marked@4.0.0\n
+cancelled = キャンセルされました。
+file_exists = {file} は既に存在します。上書きしますか？ (y/n) 
+overwritten = {file} を上書きしました。
+not_modified = {file} は変更されていません。
+created = {file} を作成しました。
+dir_created = ディレクトリ構造を {dirs} に作成しました
+ready = ✅ ディレクトリとテンプレートファイルの準備ができました。
+markdowns_not_found = Markdowns/ ディレクトリが見つかりません。"node epubcreator.js createdir" で作成してください。
+path_not_found = パスが見つかりません: {path}
+must_be_md = ファイルは .md 拡張子である必要があります
+no_md_found = そのディレクトリに .md ファイルは見つかりませんでした。
+md_count = {count} 個の .md ファイルが見つかりました。
+xhtml_exists = {count} 個の .xhtml ファイルが既に存在します。(Y) すべて上書き、(N) すべて Markdowns にコピー、(C) キャンセル: 
+convert_cancelled = 変換がキャンセルされました。
+copy_md = 📋 {file} を {dest} にコピーします
+md_already_exists = ℹ️  {file} は Markdowns に既に存在するため、コピーをスキップします。
+copy_done = 完了: {count} 個の .md ファイルを Markdowns/ にコピーしました。
+skip_file = {file} をスキップします
+convert_success = ✅ 変換成功: {file}
+convert_fail = Markdown {file} の解析に失敗しました: {error}
+convert_summary = 完了: {total} 個中 {success} 個のファイルが正常に変換されました。
+invalid_path = パスは有効なファイルまたはディレクトリではありません。
+xhtml_already_exists = {file} は既に存在します。(Y) 上書き、(N) Markdowns にコピー、(C) キャンセル: 
+epub_not_found = EPUB/ ディレクトリが見つかりません。
+must_be_xhtml = ファイルは .xhtml 拡張子である必要があります
+skip_cover = {file} をスキップします (除外)
+no_xhtml_found = そのディレクトリに有効な .xhtml ファイルは見つかりませんでした。
+xhtml_count = {count} 個の .xhtml ファイルが見つかりました。
+convertx_success = ✅ 変換成功: {file}
+convertx_fail = {file} の変換に失敗しました: {error}
+convertx_summary = 完了: {total} 個中 {success} 個のファイルが正常に変換されました。
+docx_no_files = .docx ファイルが見つかりませんでした。
+docx_processing = 📄 処理中: {file}
+docx_no_images = ℹ️ DOCX からの画像抽出はまだサポートされていません。画像は無視されます。
+docx_heading_mode_warn = ⚠️ フォントサイズベースの見出しモードが使用されています (設定されたしきい値を使用)。
+docx_nosplit_mode = ℹ️ 分割なしモード (--nosplit) が有効です。すべてのコンテンツは1つのファイルに統合されます。
+split_usage = node epubcreator.js split <パス> [--output ディレクトリ] [--force]
+split_processing = {file} を処理中 ...
+split_no_heading = {file} に見出しレベル2 (##) が見つからなかったため、全コンテンツを1つのファイルとして保存しました。
+split_parts = {count} 個のパーツに分割しました。
+split_created = ファイル作成: {file}
+split_summary = 完了: {total} 個中 {success} 個のファイルが正常に処理されました。
+split_output_dir = 出力ディレクトリ: {dir}
+merge_usage = node epubcreator.js merge <パス> [--output ファイル] [--force]
+merge_no_files = {path} に .md ファイルが見つかりませんでした。
+merge_processing = {count} 個のファイルをマージ中 ...
+merge_created = マージされたファイルを作成しました: {file}
+merge_summary = ✅ {count} 個のファイルを {output} に正常にマージしました。
+merge_output_file = 出力: {file}
+config_not_found = config.txt が見つかりません！実行: node epubcreator.js createdir
+epub_dir_not_found = EPUB/ ディレクトリが見つかりません！
+title_missing = config.txt に "title" が必要です
+author_missing = config.txt に "author" が必要です
+no_chapters = EPUB/ にチャプター (.xhtml ファイル) が見つかりません (cover/toc/nav を除く)
+chapters_found = {count} 個のチャプターが見つかりました。
+cover_missing = ⚠️  EPUB/images/ に cover.png が見つかりません — カバーは画像なしになります。
+cover_found = カバー: {file}
+media_summary = 画像: {images} | オーディオ/ビデオ: {audio}
+epub_built = ✅ EPUB のビルドに成功しました: {path} ({size} KB)
+zip_error = ZIP の作成に失敗しました: {error}
+warning_ord_not_found = 警告: ord.txt のファイル "{file}" が EPUB/ に見つかりません
+import_no_epub = このディレクトリに .epub ファイルが見つかりませんでした。
+import_select = インポートする EPUB ファイルを選択してください:
+import_select_prompt = 番号を入力してください (1-{count}): 
+import_invalid_choice = 無効な選択です。
+import_extracting = 📦 {file} を抽出中 ...
+import_done = ✅ インポートが完了しました。
+import_summary =    チャプター: {chapters}, 画像: {images}, オーディオ/ビデオ: {audio}
+import_hint = 💡 必要に応じて "node epubcreator.js convertch xhtml2md" を実行して .xhtml を .md に変換してください。
+import_skip_non_spine = 非チャプターファイルをスキップします: {file}
+import_cover_found = カバーが見つかりました: {file}
+import_force_overwrite = 既存ファイルを上書きします (--force)。
+node_modules_missing = node_modules が見つかりません。
+download_confirm = リポジトリからビルド済みの依存関係をダウンロードしますか？ (y/n) 
+extract_no_assets = ❌ アーカイブ内に assets/node_modules フォルダが見つかりませんでした。
+download_start = 📥 バンドルをダウンロード中 ...
+download_complete = ✅ ダウンロード完了。抽出中 ...
+download_failed = ❌ バンドルのダウンロードに失敗しました: {error}
+extract_failed = ❌ node_modules の抽出に失敗しました: {error}
+extract_success = ✅ node_modules の抽出に成功しました。
+tar_not_found = ❌ "tar" コマンドが見つかりません。tar がインストールされていることを確認してください (Linux/macOS/Termux) または Windows では Git Bash を使用してください。
+update_confirm = 既存の node_modules フォルダを置き換えます。続行しますか？ (y/n) 
+update_force = node_modules を上書きします (--force)。
+validate_no_epub = builds/ に .epub ファイルが見つかりませんでした。
+validate_start = 🔍 {file} を検証中 ...
+validate_ok = ✅ {file} の検証に合格しました
+validate_fail = ❌ 検証に失敗しました:\n{output}
+debug_usage = node epubcreator.js debug  → Markdowns/ の変更を監視し、自動的に convertch + build を実行
+debug_start = Markdowns/ の変更を監視しています... Ctrl+C で停止します。
+debug_change = 変更を検出しました。再ビルド中...
+debug_error = 再ビルド中にエラーが発生しました: {error}
+debug_watch_fallback = 警告: 再帰的な監視はサポートされていません。ルートディレクトリのみを監視します (サブディレクトリの変更は検出されない場合があります)。
+debug_watching_again = 再度監視しています...
+settings_title = === .epubcreator/settings.txt ===
+settings_prompt = Enter キーを押すと現在の値を保持し、新しい値を入力するか、"save" で保存、"cancel" で中止します。
+settings_saved = ✅ 設定を {file} に保存しました。
+settings_cancelled = 設定をキャンセルしました。
+settings_invalid_value = 無効な値です。以前の値を保持します。
+updateconfig_confirm = 既存の .epubcreator フォルダを置き換えます。続行しますか？ (y/n) 
+updateconfig_force = .epubcreator を上書きします (--force)。
+updateconfig_fetching = 📥 config ブランチから設定バンドルをダウンロード中...
+updateconfig_extracting = 設定を抽出中...
+updateconfig_success = ✅ .epubcreator の更新に成功しました。
+updateconfig_no_assets = ❌ アーカイブ内に .epubcreator フォルダが見つかりませんでした。
+updateconfig_failed = ❌ 設定の更新に失敗しました: {error}
+createdir_update_config = config ブランチから .epubcreator を更新中...
+createdir_skip_update = .epubcreator の更新をスキップします。
+unknown_command = 不明なコマンド: {cmd}
+usage_hint = 使用法: createdir | convertch | conv | split | merge | build | debug | import | updatemodule | updateconfig | settings | validate | --version
+help_title = 📚 epubcreator — ディレクトリを EPUB にコンパイルするための CLI  (v{version})
+help_commands = 
+  node epubcreator.js createdir           ディレクトリ構造を作成し、ツール設定をダウンロード
+  node epubcreator.js convertch           .md → .xhtml に変換 (デフォルト、Markdowns/ を参照)
+  node epubcreator.js convertch xhtml2md  .xhtml → .md に変換
+  node epubcreator.js convertch docx2md   .docx → .md に変換 (## で分割)
+  node epubcreator.js conv ...            convertch のエイリアス
+  node epubcreator.js split <パス>        .md ファイルを見出し ## で分割
+  node epubcreator.js merge <パス>        .md ファイルを1つにマージ (split の逆)
+  node epubcreator.js build               カレントディレクトリから EPUB をビルド
+  node epubcreator.js debug               Markdowns/ の変更を監視し、自動 convertch + build
+  node epubcreator.js import              カレントディレクトリから .epub ファイルをインポート
+  node epubcreator.js updatemodule        リポジトリから node_modules をダウンロード/更新
+  node epubcreator.js updatemodule --force 確認なしで更新
+  node epubcreator.js updateconfig        リポジトリ (config ブランチ) から .epubcreator をダウンロード/更新
+  node epubcreator.js settings            対話型ツール設定
+  node epubcreator.js validate            epubcheck で最新の EPUB を検証
+  node epubcreator.js --version           バージョンを表示
+help_structure = 
+ディレクトリ構造:
+  ./
+  ├── config.txt          ← 書籍メタデータ (必須)
+  ├── ord.txt             ← チャプター順序リスト (オプション)
+  ├── Docs/               ← ソース .docx ファイル (docx2md 用)
+  ├── Markdowns/          ← ソース .md ファイル (convertch 用)
+  ├── node_modules/       ← 依存関係 (updatemodule で自動ダウンロード)
+  ├── .epubcreator/       ← ツール設定と言語ファイル (createdir/updateconfig で自動ダウンロード)
+  │   ├── settings.txt
+  │   └── lang/
+  │       ├── en.txt
+  │       └── id.txt
+  ├── EPUB/
+  │   ├── images/
+  │   │   └── cover.png   ← 必須
+  │   ├── audiovideo/     ← オプション
+  │   ├── bab1.xhtml      ← チャプター (任意の名前、EPUB/ ルート直下)
+  │   └── ...
+  └── builds/
+      └── [フォルダ名].epub   ← ビルド結果
+help_deps = 
+注意: 主要な依存関係がインストールされていることを確認してください:
+  npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4
+DOCX 機能の場合:  npm install mammoth@1.6.0 (オプション)
+インポート機能の場合: npm install adm-zip@0.5.10 xml2js@0.5.0 (オプション)
+検証の場合: epubcheck をインストール (https://github.com/w3c/epubcheck)
+  または "node epubcreator.js updatemodule" を実行して自動ダウンロードすることもできます。
