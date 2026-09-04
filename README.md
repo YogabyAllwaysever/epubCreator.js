@@ -3,15 +3,14 @@
 
 CLI tool for compiling a directory into an EPUB ebook
 
-Version: 2.9.0
+Version: 3.0.0
 
 ---
 
 ✨ Features
 
 - 🏗️ Build EPUB from a structured directory
-- 📝 Create config.txt template for book metadata
-- 📂 Create directory structure with all necessary files
+- 📂 Create directory structure with all necessary files (including tool config & language files)
 - 🔄 Convert Markdown (.md) to XHTML (.xhtml) and vice versa
 - 📄 Convert DOCX (.docx) to Markdown (.md) with smart heading detection
 - ✂️ **Split** Markdown files by headings (`##`) into multiple files
@@ -19,7 +18,8 @@ Version: 2.9.0
 - 📥 **Import existing EPUB** – extract chapters, metadata, cover, and media into the project structure
 - 🔍 **Debug mode** – watch Markdowns/ for changes and auto-rebuild
 - 📦 **Auto‑download dependencies** – fetch and extract pre‑built `node_modules` from the repository
-- 🌍 Multilingual support (Indonesian & English)
+- ⚙️ **Tool settings** – interactive configuration (language, watch delay, auto‑build, overwrite policy)
+- 🌍 Multilingual support (Indonesian & English) – language files stored separately for easy updates
 - 📋 Chapter order control via optional ord.txt
 - 🎨 Automatic cover, TOC, and metadata generation
 - 📦 Zero-config build with sensible defaults
@@ -30,24 +30,34 @@ Version: 2.9.0
 📦 Installation
 
 ```bash
-git clone https://github.com/yourusername/epubcreator.git
-cd epubcreator
+git clone https://github.com/YogabyAllwaysever/epubcreator.js.git
+cd epubcreator.js
 ```
 
-or download as ZIP
+or download as ZIP.
 
-Main dependencies:
+The tool itself is self‑contained – you only need Node.js. Dependencies and configuration files are downloaded automatically when you run createdir.
+
+Main dependencies (auto‑downloaded via updatemodule):
+
+· archiver@5.3.0
+· marked@4.0.0
+· turndown@7.2.4
+
+Optional dependencies (for extra features):
+
+· mammoth@1.6.0 – DOCX conversion
+· adm-zip@0.5.10 & xml2js@0.5.0 – EPUB import
+
+If you prefer to install manually:
 
 ```bash
 npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4
+# and optional:
+npm install mammoth@1.6.0 adm-zip@0.5.10 xml2js@0.5.0
 ```
 
-Optional dependencies:
-
-· For DOCX conversion: npm install mammoth@1.6.0
-· For EPUB import: npm install adm-zip@0.5.10 xml2js@0.5.0
-
-Alternative: run node epubcreator.js updatemodule to download all dependencies automatically.
+Or run node epubcreator.js updatemodule to download everything automatically.
 
 ---
 
@@ -59,70 +69,74 @@ node epubcreator.js <command> [options]
 
 Available Commands
 
-· createconfig
-Create config.txt template
-· createchapter
-Create a chapter .xhtml template file
 · createdir
-Create directory structure and template files
+    Create full directory structure, config files, and download .epubcreator/ (tool settings & language files) from the config branch.
 · convertch [path] [options]
-Convert .md files to .xhtml (default; scans Markdowns/ or given path)
+    Convert .md files to .xhtml (default: scans Markdowns/ or given path).
 · convertch xhtml2md [path]
-Convert .xhtml files to .md (scans EPUB/ or given path)
+    Convert .xhtml files to .md (scans EPUB/ or given path).
 · convertch docx2md [path] [options]
-Convert .docx files to .md (scans Docs/ or given path; split by ##)
+    Convert .docx files to .md (scans Docs/ or given path; split by ##).
 · conv ...
-Alias for convertch (same subcommands and options)
+    Alias for convertch (same subcommands and options).
 · split <path> [options]
-Split a Markdown file into multiple files by heading level 2 (##)
+    Split a Markdown file (or all .md files in a directory) by heading level 2 (##) into multiple files.
 · merge <path> [options]
-Merge multiple Markdown files into one (reverse of split)
+    Merge multiple Markdown files into one (reverse of split).
 · build
-Build EPUB from current directory
+    Build EPUB from current directory.
 · debug
-Watch Markdowns/ for changes; auto-convert .md → .xhtml and rebuild on every change
+    Watch Markdowns/ for changes; auto‑convert .md → .xhtml and rebuild on every change.
 · import [options]
-Import an existing .epub file from the current directory into the project structure
+    Import an existing .epub file from the current directory into the project structure.
 · updatemodule [--force]
-Download/update node_modules from the repository (pre‑built bundle)
-· lang-id
-Switch language to Indonesian
-· lang-en
-Switch language to English (US)
+    Download/update node_modules from the repository (pre‑built bundle from main branch).
+· updateconfig [--force]
+    Download/update .epubcreator/ (tool settings & language files) from the config branch.
+· settings
+    Interactive tool settings editor (language, watch delay, auto‑build, overwrite policy).
+· validate
+    Validate the latest built EPUB using epubcheck (requires epubcheck installed).
 · --version, -v
-Show version
+    Show version.
 · help, --help
-Show help message
+    Show help message.
+
+Command Options
+
+Global options (apply to most commands):
+
+· --force, -f – Overwrite existing files without asking.
 
 Options for convertch (MD → XHTML):
 
-· --force, -f – Overwrite existing .xhtml files without asking.
+· (no extra options besides --force)
 
 Options for convertch docx2md:
 
-· --force, -f – Overwrite existing .md files without asking.
 · --output <dir> – Output directory (default: Markdowns/fromdocx).
-· --no-images – Suppress warning about unsupported image extraction (currently images are ignored anyway).
-· --nosplit, -n – Do not split by headings; output a single .md file per .docx.
+· --force, -f – Overwrite existing files.
+· --no-images – Suppress warning about unsupported image extraction (images are ignored anyway).
+· --nosplit, -n – Do not split by headings; output a single .md per .docx.
 
 Options for split:
 
 · --output <dir> – Output directory (default: Markdowns/split).
-· --force, -f – Overwrite existing files without asking.
+· --force, -f – Overwrite existing files.
 
 Options for merge:
 
 · --output <file> – Output file path (default: merged.md).
-· --force, -f – Overwrite existing file without asking.
+· --force, -f – Overwrite existing file.
 
 Options for import:
 
-· --force, -f – Overwrite existing files without asking.
+· --force, -f – Overwrite existing files.
 · --output <dir> – Target directory (default: current directory).
 
-Options for updatemodule:
+Options for updatemodule / updateconfig:
 
-· --force, -f – Skip confirmation and overwrite existing node_modules.
+· --force, -f – Skip confirmation and overwrite without asking.
 
 ---
 
@@ -134,6 +148,10 @@ Options for updatemodule:
 ├── ord.txt                 ← Chapter order list (optional)
 ├── Docs/                   ← Source .docx files (for docx2md)
 ├── Markdowns/              ← Source .md files (for convertch)
+├── .epubcreator/           ← Tool configuration & language files (auto‑downloaded)
+│   ├── settings.txt        ← Tool settings (lang, watch_delay, auto_build, overwrite_policy)
+│   └── lang/               ← Language files (en.txt, id.txt)
+├── node_modules/           ← Dependencies (auto‑downloaded via updatemodule)
 ├── EPUB/
 │   ├── images/
 │   │   └── cover.png       ← REQUIRED
@@ -146,7 +164,9 @@ Options for updatemodule:
 
 ---
 
-📝 Configuration (config.txt)
+📝 Configuration Files
+
+config.txt – Book Metadata
 
 ```ini
 # ============================================================
@@ -207,9 +227,25 @@ extra_titles:
 # heading3 = 14
 ```
 
----
+.epubcreator/settings.txt – Tool Settings
 
-📄 Order File (ord.txt)
+This file is automatically created when you run createdir or settings. It controls the behavior of the tool itself (not the book metadata).
+
+```ini
+lang = en
+watch_delay = 500
+auto_build = false
+overwrite_policy = ask
+```
+
+· lang – Interface language (id or en).
+· watch_delay – Debounce delay (ms) for debug mode.
+· auto_build – If true, automatically run build after a successful convertch.
+· overwrite_policy – How to handle existing files: ask (prompt), force (overwrite all), or skip (skip all).
+
+You can edit this file manually or use the interactive settings command.
+
+ord.txt – Chapter Order
 
 Optional file to specify chapter order. Each line contains a .xhtml filename:
 
@@ -220,7 +256,7 @@ bab2.xhtml
 bab3.xhtml
 ```
 
-If ord.txt doesn't exist, chapters are sorted naturally (numeric-aware).
+If ord.txt doesn't exist, chapters are sorted naturally (numeric‑aware).
 
 ---
 
@@ -245,13 +281,13 @@ convertch docx2md — DOCX → Markdown
 
 · Scans the Docs/ directory (or a given path) for .docx files.
 · Converts DOCX to HTML using mammoth.
-· Detects headings by Word styles (Heading 1, 2, 3) or by font size if [docx-mapping] is configured.
+· Detects headings by Word styles (Heading 1, Heading 2, Heading 3) or by font size if [docx-mapping] is configured in config.txt.
 · Splits output into multiple .md files by ## headings by default.
 · Supports --output, --force, --no-images, and --nosplit (to produce a single .md per .docx).
 
 split — Split Markdown by Headings
 
-· Splits a .md file (or all .md files in a directory) into separate files at each level-2 heading (##).
+· Splits a .md file (or all .md files in a directory) into separate files at each level‑2 heading (##).
 · Each part is saved as [basename]-pN.md where N is the part number.
 · If no heading is found, the entire content is saved as one file.
 · Supports --output and --force.
@@ -259,7 +295,7 @@ split — Split Markdown by Headings
 merge — Merge Markdown Files
 
 · Merges all .md files found in a directory (or a single file) into one output file.
-· Files are combined in natural (numeric-aware) order.
+· Files are combined in natural (numeric‑aware) order.
 · Useful to reverse the split operation or to combine chapter files.
 · Supports --output and --force.
 
@@ -281,7 +317,7 @@ node epubcreator.js debug
 ```
 
 · Runs until you press Ctrl+C.
-· Uses a 500ms debounce to avoid excessive rebuilds during rapid edits.
+· Uses a debounce delay configured in .epubcreator/settings.txt (default: 500ms) to avoid excessive rebuilds during rapid edits.
 · Works on the current directory.
 
 ---
@@ -324,7 +360,7 @@ After import, you can:
 
 The updatemodule command simplifies dependency management:
 
-· Downloads a pre‑built tarball from the repository.
+· Downloads a pre‑built tarball from the main branch of the repository.
 · Extracts the node_modules folder directly into your project.
 · Avoids manual npm install steps and version mismatches.
 
@@ -338,7 +374,37 @@ node epubcreator.js updatemodule
 node epubcreator.js updatemodule --force
 ```
 
-This is especially useful when you want a quick setup or when npm install fails due to network or platform issues.
+---
+
+🔄 Update Tool Configuration (updateconfig)
+
+The updateconfig command downloads the latest .epubcreator/ folder (settings & language files) from the config branch of the repository.
+
+This is useful when new language translations or default settings are released.
+
+Usage:
+
+```bash
+# Update (prompts if .epubcreator already exists)
+node epubcreator.js updateconfig
+
+# Force overwrite without confirmation
+node epubcreator.js updateconfig --force
+```
+
+---
+
+⚙️ Interactive Settings (settings)
+
+The settings command lets you view and modify tool settings interactively.
+
+```bash
+node epubcreator.js settings
+```
+
+You'll see the current values and be prompted to change each one. Press Enter to keep the current value, type a new value to change it, or type save to save and exit, or cancel to abort.
+
+Settings are stored in .epubcreator/settings.txt.
 
 ---
 
@@ -350,9 +416,9 @@ The build command:
 2. Collects chapters from EPUB/ (respects ord.txt if exists).
 3. Detects cover image (cover.png in EPUB/images/).
 4. Generates:
-   · volume.opf — EPUB package file
-   · toc.xhtml — Table of Contents
-   · cover.xhtml — Cover page
+   · volume.opf – EPUB package file
+   · toc.xhtml – Table of Contents
+   · cover.xhtml – Cover page
    · META-INF/container.xml
 5. Packages everything into builds/[folder-name].epub.
 
@@ -362,9 +428,10 @@ The build command:
 
 The tool supports Indonesian (id) and English (en).
 
-· On first run, you will be prompted to choose your preferred language.
-· The choice is saved in .epubcreator.txt in the current directory.
-· Switch anytime with lang-id or lang-en.
+· Default language is English (en).
+· You can change the language at any time using the settings command (interactive) or by editing .epubcreator/settings.txt directly.
+· Language files are stored in .epubcreator/lang/ and are downloaded automatically when you run createdir or updateconfig.
+· If a language file is missing, the tool falls back to the built‑in English strings.
 
 ---
 
@@ -382,16 +449,10 @@ This creates:
 · EPUB/ with images/ and audiovideo/
 · Markdowns/
 · Docs/
+· .epubcreator/ (tool settings & language files) – downloaded from the config branch
+· node_modules/ – downloaded from the main branch (if not already present)
 
-2. Create a chapter
-
-```bash
-node epubcreator.js createchapter
-# Enter filename: bab1.xhtml
-# Enter chapter title: Pengantar
-```
-
-3. Convert Markdown to XHTML
+2. Convert Markdown to XHTML
 
 ```bash
 # Default: scans Markdowns/
@@ -404,7 +465,7 @@ node epubcreator.js convertch ./my_markdown
 node epubcreator.js convertch --force
 ```
 
-4. Convert DOCX to Markdown
+3. Convert DOCX to Markdown
 
 ```bash
 # Scan Docs/ (default)
@@ -420,7 +481,7 @@ node epubcreator.js conv docx2md -f
 node epubcreator.js convertch docx2md --nosplit
 ```
 
-5. Split a Markdown file
+4. Split a Markdown file
 
 ```bash
 # Split all .md files in Markdowns/
@@ -430,7 +491,7 @@ node epubcreator.js split Markdowns/
 node epubcreator.js split chapter.md --output ./split_parts --force
 ```
 
-6. Merge Markdown files
+5. Merge Markdown files
 
 ```bash
 # Merge all .md files in Markdowns/ into merged.md
@@ -440,7 +501,7 @@ node epubcreator.js merge Markdowns/
 node epubcreator.js merge ./split_parts --output full.md --force
 ```
 
-7. Import an existing EPUB
+6. Import an existing EPUB
 
 ```bash
 # Import the first .epub found
@@ -453,14 +514,14 @@ node epubcreator.js import
 node epubcreator.js import --force --output ./imported_book
 ```
 
-8. Build the EPUB
+7. Build the EPUB
 
 ```bash
 node epubcreator.js build
 # Output: builds/[folder-name].epub
 ```
 
-9. Convert XHTML back to Markdown
+8. Convert XHTML back to Markdown
 
 ```bash
 node epubcreator.js convertch xhtml2md
@@ -468,13 +529,25 @@ node epubcreator.js convertch xhtml2md
 node epubcreator.js conv xhtml2md ./EPUB/custom
 ```
 
-10. Download dependencies automatically
+9. Download dependencies automatically
 
 ```bash
 node epubcreator.js updatemodule
 ```
 
-11. Debug / auto-rebuild
+10. Update tool configuration
+
+```bash
+node epubcreator.js updateconfig
+```
+
+11. Change tool settings interactively
+
+```bash
+node epubcreator.js settings
+```
+
+12. Debug / auto-rebuild
 
 ```bash
 # Watch Markdowns/ and rebuild on every change
@@ -485,12 +558,12 @@ node epubcreator.js debug
 
 📦 Dependencies
 
-· archiver (5.3.0) — ZIP packaging
-· marked (4.0.0) — Markdown parsing
-· turndown (7.2.4) — XHTML to Markdown conversion
-· mammoth (1.6.0) — DOCX to HTML conversion (optional)
-· adm-zip (0.5.10) — EPUB import (optional)
-· xml2js (0.5.0) — OPF parsing for import (optional)
+· archiver (5.3.0) – ZIP packaging
+· marked (4.0.0) – Markdown parsing
+· turndown (7.2.4) – XHTML to Markdown conversion
+· mammoth (1.6.0) – DOCX to HTML conversion (optional)
+· adm-zip (0.5.10) – EPUB import (optional)
+· xml2js (0.5.0) – OPF parsing for import (optional)
 
 All dependencies can be installed manually via npm install or automatically via updatemodule.
 
