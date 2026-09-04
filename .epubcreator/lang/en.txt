@@ -1,0 +1,159 @@
+lang_changed = Language changed to {lang}.
+lang_saved = Language saved to {file}.
+missing_dep = ❌ Module "{mod}" (v{version}) not found. Install with:\n  npm install {mod}@{version}\n
+marked_old = ❌ "marked" version is too old. Reinstall with:\n  npm install marked@4.0.0\n
+cancelled = Cancelled.
+file_exists = {file} already exists. Overwrite? (y/n) 
+overwritten = {file} overwritten.
+not_modified = {file} unchanged.
+created = {file} created.
+dir_created = Directory structure created at {dirs}
+ready = ✅ Directory and template files ready.
+markdowns_not_found = Markdowns/ directory not found. Create with "node epubcreator.js createdir"
+path_not_found = Path not found: {path}
+must_be_md = File must have .md extension
+no_md_found = No .md files found in that directory.
+md_count = Found {count} .md files.
+xhtml_exists = {count} .xhtml files already exist. (Y) Overwrite all, (N) Copy all to Markdowns, (C) Cancel: 
+convert_cancelled = Conversion cancelled.
+copy_md = 📋 Copy {file} to {dest}
+md_already_exists = ℹ️  {file} already exists in Markdowns, skipping copy.
+copy_done = Done: {count} .md files copied to Markdowns/.
+skip_file = Skipping {file}
+convert_success = ✅ Successfully converted: {file}
+convert_fail = Failed to parse Markdown {file}: {error}
+convert_summary = Done: {success} out of {total} files converted successfully.
+invalid_path = Path is not a valid file or directory.
+xhtml_already_exists = {file} already exists. (Y) Overwrite, (N) Copy to Markdowns, (C) Cancel: 
+epub_not_found = EPUB/ directory not found.
+must_be_xhtml = File must have .xhtml extension
+skip_cover = Skipping {file} (excluded)
+no_xhtml_found = No valid .xhtml files found in that directory.
+xhtml_count = Found {count} .xhtml files.
+convertx_success = ✅ Successfully converted: {file}
+convertx_fail = Failed to convert {file}: {error}
+convertx_summary = Done: {success} out of {total} files converted successfully.
+docx_no_files = No .docx files found.
+docx_processing = 📄 Processing: {file}
+docx_no_images = ℹ️ Image extraction from DOCX not yet supported; images will be ignored.
+docx_heading_mode_warn = ⚠️ Font size based heading mode is used (with configured thresholds).
+docx_nosplit_mode = ℹ️ No-split mode (--nosplit) is active, all content will be merged into one file.
+split_usage = node epubcreator.js split <path> [--output dir] [--force]
+split_processing = Processing {file} ...
+split_no_heading = No heading level 2 (##) found in {file}, entire content saved as one file.
+split_parts = Split into {count} parts.
+split_created = File created: {file}
+split_summary = Done: {success} out of {total} files processed successfully.
+split_output_dir = Output directory: {dir}
+merge_usage = node epubcreator.js merge <path> [--output file] [--force]
+merge_no_files = No .md files found in {path}.
+merge_processing = Merging {count} files ...
+merge_created = Merged file created: {file}
+merge_summary = ✅ {count} files successfully merged into {output}.
+merge_output_file = Output: {file}
+config_not_found = config.txt not found! Run: node epubcreator.js createdir
+epub_dir_not_found = EPUB/ directory not found!
+title_missing = config.txt must have "title"
+author_missing = config.txt must have "author"
+no_chapters = No chapters (.xhtml files) found in EPUB/ (excluding cover/toc/nav)
+chapters_found = Found {count} chapters.
+cover_missing = ⚠️  No cover.png found in EPUB/images/ — cover will be without image.
+cover_found = Cover: {file}
+media_summary = Images: {images} | Audio/Video: {audio}
+epub_built = ✅ EPUB built successfully: {path} ({size} KB)
+zip_error = Failed to create ZIP: {error}
+warning_ord_not_found = Warning: file "{file}" in ord.txt not found in EPUB/
+import_no_epub = No .epub file found in this directory.
+import_select = Select EPUB file to import:
+import_select_prompt = Enter number (1-{count}): 
+import_invalid_choice = Invalid choice.
+import_extracting = 📦 Extracting {file} ...
+import_done = ✅ Import completed.
+import_summary =    Chapters: {chapters}, Images: {images}, Audio/Video: {audio}
+import_hint = 💡 Run "node epubcreator.js convertch xhtml2md" to convert .xhtml to .md if needed.
+import_skip_non_spine = Skipping non-chapter file: {file}
+import_cover_found = Cover found: {file}
+import_force_overwrite = Overwriting existing files (--force).
+node_modules_missing = node_modules not found.
+download_confirm = Download pre-built dependencies from repository? (y/n) 
+extract_no_assets = ❌ Folder assets/node_modules not found in archive.
+download_start = 📥 Downloading bundle ...
+download_complete = ✅ Download complete. Extracting ...
+download_failed = ❌ Failed to download bundle: {error}
+extract_failed = ❌ Failed to extract node_modules: {error}
+extract_success = ✅ node_modules extracted successfully.
+tar_not_found = ❌ "tar" command not found. Please ensure tar is installed (Linux/macOS/Termux) or use Git Bash on Windows.
+update_confirm = This will replace your existing node_modules folder. Continue? (y/n) 
+update_force = Overwriting node_modules (--force).
+validate_no_epub = No .epub file found in builds/
+validate_start = 🔍 Validating {file} ...
+validate_ok = ✅ Validation passed for {file}
+validate_fail = ❌ Validation failed:\n{output}
+debug_usage = node epubcreator.js debug  → Watch changes in Markdowns/, auto convertch + build
+debug_start = Watching Markdowns/ for changes... Press Ctrl+C to stop.
+debug_change = Changes detected, rebuilding...
+debug_error = Error during rebuild: {error}
+debug_watch_fallback = Warning: recursive watch not supported, watching root directory only (subdirectory changes may not trigger).
+debug_watching_again = Watching again...
+settings_title = === .epubcreator/settings.txt ===
+settings_prompt = Press Enter to keep current value, or type new value. Type "save" to save, "cancel" to abort.
+settings_saved = ✅ Settings saved to {file}.
+settings_cancelled = Settings cancelled.
+settings_invalid_value = Invalid value. Keeping previous.
+updateconfig_confirm = This will replace your existing .epubcreator folder. Continue? (y/n) 
+updateconfig_force = Overwriting .epubcreator (--force).
+updateconfig_fetching = 📥 Downloading configuration bundle from config branch...
+updateconfig_extracting = Extracting configuration...
+updateconfig_success = ✅ .epubcreator updated successfully.
+updateconfig_no_assets = ❌ Folder .epubcreator not found in archive.
+updateconfig_failed = ❌ Failed to update config: {error}
+createdir_update_config = Updating .epubcreator from config branch...
+createdir_skip_update = Skipping .epubcreator update.
+unknown_command = Unknown command: {cmd}
+usage_hint = Use: createdir | convertch | conv | split | merge | build | debug | import | updatemodule | updateconfig | settings | validate | --version
+help_title = 📚 epubcreator — CLI for compiling directory to EPUB  (v{version})
+help_commands = 
+  node epubcreator.js createdir           Create directory structure and download tool config
+  node epubcreator.js convertch           Convert .md → .xhtml (default, looks in Markdowns/)
+  node epubcreator.js convertch xhtml2md  Convert .xhtml → .md
+  node epubcreator.js convertch docx2md   Convert .docx → .md (split by ##)
+  node epubcreator.js conv ...            Alias for convertch
+  node epubcreator.js split <path>        Split .md file by heading ##
+  node epubcreator.js merge <path>        Merge .md files into one (reverse of split)
+  node epubcreator.js build               Build EPUB from current directory
+  node epubcreator.js debug               Watch changes in Markdowns/, auto convertch + build
+  node epubcreator.js import              Import .epub file from current directory
+  node epubcreator.js updatemodule        Download/update node_modules from repo
+  node epubcreator.js updatemodule --force Update without confirmation
+  node epubcreator.js updateconfig        Download/update .epubcreator from repo (config branch)
+  node epubcreator.js settings            Interactive tool settings
+  node epubcreator.js validate            Validate latest EPUB with epubcheck
+  node epubcreator.js --version           Show version
+help_structure = 
+Directory structure:
+  ./
+  ├── config.txt          ← book metadata (required)
+  ├── ord.txt             ← chapter order list (optional)
+  ├── Docs/               ← source .docx files (for docx2md)
+  ├── Markdowns/          ← source .md files (for convertch)
+  ├── node_modules/       ← dependencies (auto-downloaded via updatemodule)
+  ├── .epubcreator/       ← tool settings and language files (auto-downloaded via createdir/updateconfig)
+  │   ├── settings.txt
+  │   └── lang/
+  │       ├── en.txt
+  │       └── id.txt
+  ├── EPUB/
+  │   ├── images/
+  │   │   └── cover.png   ← REQUIRED
+  │   ├── audiovideo/     ← optional
+  │   ├── bab1.xhtml      ← chapters (any name, in EPUB/ root)
+  │   └── ...
+  └── builds/
+      └── [folder-name].epub   ← build result
+help_deps = 
+Note: make sure main dependencies are installed:
+  npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4
+For DOCX feature:  npm install mammoth@1.6.0 (optional)
+For import feature: npm install adm-zip@0.5.10 xml2js@0.5.0 (optional)
+For validation: install epubcheck (https://github.com/w3c/epubcheck)
+  Or run "node epubcreator.js updatemodule" to download automatically.

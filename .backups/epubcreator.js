@@ -2,14 +2,12 @@
 /**
  * epubcreator.js — Node CLI untuk kompilasi direktori ke EPUB
  *
- * Versi: 2.9.0 (added debug command)
+ * Versi: 3.0.0 (refaktor besar)
  *
  *  Copyright (C) 2026 YogabyAllwaysever.
  *
  * Cara pakai:
- *   node epubcreator.js createconfig        → buat config.txt template
- *   node epubcreator.js createchapter       → buat file bab .xhtml template (di EPUB/)
- *   node epubcreator.js createdir           → buat struktur direktori + file template
+ *   node epubcreator.js createdir           → buat struktur direktori + download .epubcreator
  *   node epubcreator.js convertch           → ubah file .md menjadi .xhtml (default)
  *   node epubcreator.js convertch xhtml2md  → ubah file .xhtml menjadi .md
  *   node epubcreator.js convertch docx2md   → ubah file .docx menjadi .md (pecah berdasarkan ##)
@@ -21,8 +19,8 @@
  *   node epubcreator.js import              → impor file .epub dari direktori saat ini
  *   node epubcreator.js updatemodule        → download/update node_modules dari repo
  *   node epubcreator.js updatemodule --force→ update tanpa konfirmasi
- *   node epubcreator.js lang-id             → ubah bahasa ke Indonesia
- *   node epubcreator.js lang-en             → ubah bahasa ke English (US)
+ *   node epubcreator.js updateconfig        → download/update .epubcreator dari repo (branch config)
+ *   node epubcreator.js settings            → ubah pengaturan tool (interaktif)
  *   node epubcreator.js validate            → validasi EPUB terakhir dengan epubcheck
  *   node epubcreator.js --version           → tampilkan versi
  *
@@ -32,7 +30,7 @@
  *   - Jika tidak ada, urutkan otomatis berdasarkan nama file (natural sort)
  */
 
-const VERSION = '2.9.0';
+const VERSION = '3.0.0';
 
 const fs = require('fs');
 const path = require('path');
@@ -41,342 +39,160 @@ const crypto = require('crypto');
 const https = require('https');
 const { execSync } = require('child_process');
 
-// ─── Konfigurasi bahasa ──────────────────────────────────────────────────
-const CONFIG_FILE = '.epubcreator.txt';
-let currentLang = 'id'; // default
+// ─── Konfigurasi tool ──────────────────────────────────────────────────
+const TOOL_DIR = '.epubcreator';
+const SETTINGS_FILE = path.join(TOOL_DIR, 'settings.txt');
+const LANG_DIR = path.join(TOOL_DIR, 'lang');
 
-// ─── Pesan terjemahan ────────────────────────────────────────────────────
-const messages = {
-  id: {
-    // Pesan umum
-    lang_changed: 'Bahasa diubah ke {lang}.',
-    lang_prompt: 'Pilih Bahasa:',
-    lang_choice_1: '[1] 🇮🇩 Indonesian',
-    lang_choice_2: '[2] 🇺🇸 English (US)',
-    lang_enter: 'Masukkan angka (1/2): ',
-    lang_invalid: 'Pilihan tidak valid. Silakan pilih 1 atau 2.',
-    lang_saved: 'Bahasa disimpan ke {file}.',
+// ─── Pesan fallback hardcoded (hanya EN, sebagai last resort) ────────
+const FALLBACK_MESSAGES = {
+  // Pesan umum
+  lang_changed: 'Language changed to {lang}.',
+  lang_saved: 'Language saved to {file}.',
+  missing_dep: '❌ Module "{mod}" (v{version}) not found. Install with:\n  npm install {mod}@{version}\n',
+  marked_old: '❌ "marked" version is too old. Reinstall with:\n  npm install marked@4.0.0\n',
+  cancelled: 'Cancelled.',
+  file_exists: '{file} already exists. Overwrite? (y/n) ',
+  overwritten: '{file} overwritten.',
+  not_modified: '{file} unchanged.',
+  created: '{file} created.',
+  dir_created: 'Directory structure created at {dirs}',
+  ready: '✅ Directory and template files ready.',
 
-    // Error dependensi
-    missing_dep: '❌ Modul "{mod}" (v{version}) tidak ditemukan. Install dengan:\n  npm install {mod}@{version}\n',
-    marked_old: '❌ Versi "marked" terlalu tua. Install ulang dengan:\n  npm install marked@4.0.0\n',
+  // convertch (MD→XHTML)
+  markdowns_not_found: 'Markdowns/ directory not found. Create with "node epubcreator.js createdir"',
+  path_not_found: 'Path not found: {path}',
+  must_be_md: 'File must have .md extension',
+  no_md_found: 'No .md files found in that directory.',
+  md_count: 'Found {count} .md files.',
+  xhtml_exists: '{count} .xhtml files already exist. (Y) Overwrite all, (N) Copy all to Markdowns, (C) Cancel: ',
+  convert_cancelled: 'Conversion cancelled.',
+  copy_md: '📋 Copy {file} to {dest}',
+  md_already_exists: 'ℹ️  {file} already exists in Markdowns, skipping copy.',
+  copy_done: 'Done: {count} .md files copied to Markdowns/.',
+  skip_file: 'Skipping {file}',
+  convert_success: '✅ Successfully converted: {file}',
+  convert_fail: 'Failed to parse Markdown {file}: {error}',
+  convert_summary: 'Done: {success} out of {total} files converted successfully.',
+  invalid_path: 'Path is not a valid file or directory.',
+  xhtml_already_exists: '{file} already exists. (Y) Overwrite, (N) Copy to Markdowns, (C) Cancel: ',
 
-    // Log umum
-    cancelled: 'Dibatalkan.',
-    file_exists: '{file} sudah ada. Timpa? (y/n) ',
-    overwritten: '{file} ditimpa.',
-    not_modified: '{file} tidak diubah.',
-    created: '{file} dibuat.',
-    dir_created: 'Struktur direktori dibuat di {dirs}',
-    ready: '✅ Direktori dan file template siap.',
+  // convertch xhtml2md
+  epub_not_found: 'EPUB/ directory not found.',
+  must_be_xhtml: 'File must have .xhtml extension',
+  skip_cover: 'Skipping {file} (excluded)',
+  no_xhtml_found: 'No valid .xhtml files found in that directory.',
+  xhtml_count: 'Found {count} .xhtml files.',
+  convertx_success: '✅ Successfully converted: {file}',
+  convertx_fail: 'Failed to convert {file}: {error}',
+  convertx_summary: 'Done: {success} out of {total} files converted successfully.',
 
-    // createchapter
-    enter_filename: 'Nama file bab (misal: bab1.xhtml): ',
-    filename_empty: 'Nama file tidak boleh kosong.',
-    enter_title: 'Judul bab: ',
-    chapter_created: 'Bab berhasil dibuat: {path}',
+  // convertch docx2md
+  docx_no_files: 'No .docx files found.',
+  docx_processing: '📄 Processing: {file}',
+  docx_no_images: 'ℹ️ Image extraction from DOCX not yet supported; images will be ignored.',
+  docx_heading_mode_warn: '⚠️ Font size based heading mode is used (with configured thresholds).',
+  docx_nosplit_mode: 'ℹ️ No-split mode (--nosplit) is active, all content will be merged into one file.',
 
-    // convertch (MD→XHTML)
-    markdowns_not_found: 'Direktori Markdowns/ tidak ditemukan. Buat dengan "node epubcreator.js createdir"',
-    path_not_found: 'Path tidak ditemukan: {path}',
-    must_be_md: 'File harus berekstensi .md',
-    no_md_found: 'Tidak ditemukan file .md di direktori tersebut.',
-    md_count: 'Ditemukan {count} file .md.',
-    xhtml_exists: '{count} file .xhtml sudah ada. (Y) Timpa semua, (N) Copy semua ke Markdowns, (C) Cancel: ',
-    convert_cancelled: 'Konversi dibatalkan.',
-    copy_md: '📋 Copy {file} ke {dest}',
-    md_already_exists: 'ℹ️  {file} sudah ada di Markdowns, skip copy.',
-    copy_done: 'Selesai: {count} file .md dicopy ke Markdowns/.',
-    skip_file: 'Lewati {file}',
-    convert_success: '✅ Berhasil mengonversi: {file}',
-    convert_fail: 'Gagal mengurai Markdown {file}: {error}',
-    convert_summary: 'Selesai: {success} dari {total} file berhasil dikonversi.',
-    invalid_path: 'Path bukan file atau direktori yang valid.',
-    xhtml_already_exists: '{file} sudah ada. (Y) Timpa, (N) Copy ke Markdowns, (C) Cancel: ',
+  // split
+  split_usage: 'node epubcreator.js split <path> [--output dir] [--force]',
+  split_processing: 'Processing {file} ...',
+  split_no_heading: 'No heading level 2 (##) found in {file}, entire content saved as one file.',
+  split_parts: 'Split into {count} parts.',
+  split_created: 'File created: {file}',
+  split_summary: 'Done: {success} out of {total} files processed successfully.',
+  split_output_dir: 'Output directory: {dir}',
 
-    // convertch xhtml2md (dulu convertchx)
-    epub_not_found: 'Direktori EPUB/ tidak ditemukan.',
-    must_be_xhtml: 'File harus berekstensi .xhtml',
-    skip_cover: 'Melewati file {file} (dikecualikan)',
-    no_xhtml_found: 'Tidak ditemukan file .xhtml yang valid di direktori tersebut.',
-    xhtml_count: 'Ditemukan {count} file .xhtml.',
-    convertx_success: '✅ Berhasil mengonversi: {file}',
-    convertx_fail: 'Gagal konversi {file}: {error}',
-    convertx_summary: 'Selesai: {success} dari {total} file berhasil dikonversi.',
+  // merge
+  merge_usage: 'node epubcreator.js merge <path> [--output file] [--force]',
+  merge_no_files: 'No .md files found in {path}.',
+  merge_processing: 'Merging {count} files ...',
+  merge_created: 'Merged file created: {file}',
+  merge_summary: '✅ {count} files successfully merged into {output}.',
+  merge_output_file: 'Output: {file}',
 
-    // convertch docx2md
-    docx_no_files: 'Tidak ditemukan file .docx.',
-    docx_processing: '📄 Memproses: {file}',
-    docx_no_images: 'ℹ️ Ekstraksi gambar dari DOCX belum didukung; gambar akan diabaikan.',
-    docx_heading_mode_warn: '⚠️ Mode ukuran font untuk heading digunakan (dengan ambang batas yang dikonfigurasi).',
-    docx_nosplit_mode: 'ℹ️ Mode tanpa pemisahan (--nosplit) aktif, semua konten akan digabung dalam satu file.',
+  // build
+  config_not_found: 'config.txt not found! Run: node epubcreator.js createdir',
+  epub_dir_not_found: 'EPUB/ directory not found!',
+  title_missing: 'config.txt must have "title"',
+  author_missing: 'config.txt must have "author"',
+  no_chapters: 'No chapters (.xhtml files) found in EPUB/ (excluding cover/toc/nav)',
+  chapters_found: 'Found {count} chapters.',
+  cover_missing: '⚠️  No cover.png found in EPUB/images/ — cover will be without image.',
+  cover_found: 'Cover: {file}',
+  media_summary: 'Images: {images} | Audio/Video: {audio}',
+  epub_built: '✅ EPUB built successfully: {path} ({size} KB)',
+  zip_error: 'Failed to create ZIP: {error}',
+  warning_ord_not_found: 'Warning: file "{file}" in ord.txt not found in EPUB/',
 
-    // split
-    split_usage: 'node epubcreator.js split <path> [--output dir] [--force]',
-    split_processing: 'Memproses {file} ...',
-    split_no_heading: 'Tidak ditemukan heading level 2 (##) di {file}, seluruh konten disimpan sebagai satu file.',
-    split_parts: 'Dibagi menjadi {count} bagian.',
-    split_created: 'File dibuat: {file}',
-    split_summary: 'Selesai: {success} dari {total} file berhasil diproses.',
-    split_output_dir: 'Direktori output: {dir}',
+  // import
+  import_no_epub: 'No .epub file found in this directory.',
+  import_select: 'Select EPUB file to import:',
+  import_select_prompt: 'Enter number (1-{count}): ',
+  import_invalid_choice: 'Invalid choice.',
+  import_extracting: '📦 Extracting {file} ...',
+  import_done: '✅ Import completed.',
+  import_summary: '   Chapters: {chapters}, Images: {images}, Audio/Video: {audio}',
+  import_hint: '💡 Run "node epubcreator.js convertch xhtml2md" to convert .xhtml to .md if needed.',
+  import_skip_non_spine: 'Skipping non-chapter file: {file}',
+  import_cover_found: 'Cover found: {file}',
+  import_force_overwrite: 'Overwriting existing files (--force).',
 
-    // merge
-    merge_usage: 'node epubcreator.js merge <path> [--output file] [--force]',
-    merge_no_files: 'Tidak ditemukan file .md di {path}.',
-    merge_processing: 'Menggabungkan {count} file ...',
-    merge_created: 'File gabungan dibuat: {file}',
-    merge_summary: '✅ {count} file berhasil digabung menjadi {output}.',
-    merge_output_file: 'Output: {file}',
+  // updatemodule & updateconfig
+  node_modules_missing: 'node_modules not found.',
+  download_confirm: 'Download pre-built dependencies from repository? (y/n) ',
+  extract_no_assets: '❌ Folder assets/node_modules not found in archive.',
+  download_start: '📥 Downloading bundle ...',
+  download_complete: '✅ Download complete. Extracting ...',
+  download_failed: '❌ Failed to download bundle: {error}',
+  extract_failed: '❌ Failed to extract node_modules: {error}',
+  extract_success: '✅ node_modules extracted successfully.',
+  tar_not_found: '❌ "tar" command not found. Please ensure tar is installed (Linux/macOS/Termux) or use Git Bash on Windows.',
+  update_confirm: 'This will replace your existing node_modules folder. Continue? (y/n) ',
+  update_force: 'Overwriting node_modules (--force).',
 
-    // build
-    config_not_found: 'config.txt tidak ditemukan! Jalankan: node epubcreator.js createconfig',
-    epub_dir_not_found: 'Direktori EPUB/ tidak ditemukan!',
-    title_missing: 'config.txt harus memiliki "title"',
-    author_missing: 'config.txt harus memiliki "author"',
-    no_chapters: 'Tidak ada bab (file .xhtml) di EPUB/ (kecuali cover/toc/nav)',
-    chapters_found: 'Ditemukan {count} bab.',
-    cover_missing: '⚠️  Tidak ada cover.png di EPUB/images/ — cover akan tanpa gambar.',
-    cover_found: 'Cover: {file}',
-    media_summary: 'Gambar: {images} | Audio/Video: {audio}',
-    epub_built: '✅ EPUB berhasil dibuat: {path} ({size} KB)',
-    zip_error: 'Gagal membuat ZIP: {error}',
-    warning_ord_not_found: 'Peringatan: file "{file}" di ord.txt tidak ditemukan di EPUB/',
+  // validate
+  validate_no_epub: 'No .epub file found in builds/',
+  validate_start: '🔍 Validating {file} ...',
+  validate_ok: '✅ Validation passed for {file}',
+  validate_fail: '❌ Validation failed:\n{output}',
 
-    // import
-    import_no_epub: 'Tidak ditemukan file .epub di direktori ini.',
-    import_select: 'Pilih file EPUB untuk diimpor:',
-    import_select_prompt: 'Masukkan nomor (1-{count}): ',
-    import_invalid_choice: 'Pilihan tidak valid.',
-    import_extracting: '📦 Mengekstrak {file} ...',
-    import_done: '✅ Import selesai.',
-    import_summary: '   Bab: {chapters}, Gambar: {images}, Audio/Video: {audio}',
-    import_hint: '💡 Jalankan "node epubcreator.js convertch xhtml2md" untuk mengubah .xhtml ke .md jika diperlukan.',
-    import_skip_non_spine: 'Melewati file non-bab: {file}',
-    import_cover_found: 'Cover ditemukan: {file}',
-    import_force_overwrite: 'Menimpa file yang sudah ada (--force).',
+  // debug
+  debug_usage: 'node epubcreator.js debug  → Watch changes in Markdowns/, auto convertch + build',
+  debug_start: 'Watching Markdowns/ for changes... Press Ctrl+C to stop.',
+  debug_change: 'Changes detected, rebuilding...',
+  debug_error: 'Error during rebuild: {error}',
+  debug_watch_fallback: 'Warning: recursive watch not supported, watching root directory only (subdirectory changes may not trigger).',
+  debug_watching_again: 'Watching again...',
 
-    // updatemodule
-    node_modules_missing: 'node_modules tidak ditemukan.',
-    download_confirm: 'Download pre-built dependencies dari repository? (y/n) ',
-    extract_no_assets: '❌ Tidak ditemukan folder assets/node_modules dalam arsip.',
-    download_start: '📥 Mendownload bundle ...',
-    download_complete: '✅ Download selesai. Mengekstrak ...',
-    download_failed: '❌ Gagal mendownload bundle: {error}',
-    extract_failed: '❌ Gagal mengekstrak node_modules: {error}',
-    extract_success: '✅ node_modules berhasil diekstrak.',
-    tar_not_found: '❌ Perintah "tar" tidak ditemukan. Pastikan tar terinstal (Linux/macOS/Termux) atau gunakan Git Bash di Windows.',
-    update_confirm: 'Ini akan mengganti folder node_modules yang ada. Lanjutkan? (y/n) ',
-    update_force: 'Menimpa node_modules (--force).',
+  // settings command
+  settings_title: '=== .epubcreator/settings.txt ===',
+  settings_prompt: 'Press Enter to keep current value, or type new value. Type "save" to save, "cancel" to abort.',
+  settings_saved: '✅ Settings saved to {file}.',
+  settings_cancelled: 'Settings cancelled.',
+  settings_invalid_value: 'Invalid value. Keeping previous.',
 
-    // validate
-    validate_no_epub: 'Tidak ada file .epub di builds/',
-    validate_start: '🔍 Memvalidasi {file} ...',
-    validate_ok: '✅ Validasi lulus untuk {file}',
-    validate_fail: '❌ Validasi gagal:\n{output}',
+  // updateconfig
+  updateconfig_confirm: 'This will replace your existing .epubcreator folder. Continue? (y/n) ',
+  updateconfig_force: 'Overwriting .epubcreator (--force).',
+  updateconfig_fetching: '📥 Downloading configuration bundle from config branch...',
+  updateconfig_extracting: 'Extracting configuration...',
+  updateconfig_success: '✅ .epubcreator updated successfully.',
+  updateconfig_no_assets: '❌ Folder .epubcreator not found in archive.',
+  updateconfig_failed: '❌ Failed to update config: {error}',
 
-    // debug
-    debug_usage: 'node epubcreator.js debug  → Pantau perubahan di Markdowns/, otomatis convertch + build',
-    debug_start: 'Memantau Markdowns/ untuk perubahan... Tekan Ctrl+C untuk berhenti.',
-    debug_change: 'Perubahan terdeteksi, membangun ulang...',
-    debug_error: 'Error saat membangun ulang: {error}',
-    debug_watch_fallback: 'Peringatan: watch rekursif tidak didukung, hanya memantau direktori utama (perubahan di subdirektori mungkin tidak terdeteksi).',
-    debug_watching_again: 'Memantau lagi...',
+  // createdir
+  createdir_update_config: 'Updating .epubcreator from config branch...',
+  createdir_skip_update: 'Skipping .epubcreator update.',
 
-    // command unknown
-    unknown_command: 'Perintah tidak dikenal: {cmd}',
-    usage_hint: 'Gunakan: createconfig | createchapter | createdir | convertch | conv | split | merge | build | debug | import | updatemodule | lang-id | lang-en | validate | --version',
+  // command unknown
+  unknown_command: 'Unknown command: {cmd}',
+  usage_hint: 'Use: createdir | convertch | conv | split | merge | build | debug | import | updatemodule | updateconfig | settings | validate | --version',
 
-    // Help
-    help_title: '📚 epubcreator — CLI untuk kompilasi direktori ke EPUB  (v{version})',
-    help_commands: `
-  node epubcreator.js createconfig        Buat config.txt template
-  node epubcreator.js createchapter       Buat file bab .xhtml template
-  node epubcreator.js createdir           Buat struktur direktori dan file template
-  node epubcreator.js convertch           Ubah .md → .xhtml (default, cari di Markdowns/)
-  node epubcreator.js convertch xhtml2md  Ubah .xhtml → .md
-  node epubcreator.js convertch docx2md   Ubah .docx → .md (pecah berdasarkan ##)
-  node epubcreator.js conv ...            Alias untuk convertch
-  node epubcreator.js split <path>        Pecah file .md berdasarkan heading ##
-  node epubcreator.js merge <path>        Gabungkan file .md menjadi satu (kebalikan split)
-  node epubcreator.js build               Build EPUB dari direktori saat ini
-  node epubcreator.js debug               Pantau perubahan di Markdowns/, auto convertch + build
-  node epubcreator.js import              Impor file .epub dari direktori saat ini
-  node epubcreator.js updatemodule        Download/update node_modules dari repo
-  node epubcreator.js updatemodule --force Update tanpa konfirmasi
-  node epubcreator.js lang-id             Ubah bahasa ke Indonesia
-  node epubcreator.js lang-en             Ubah bahasa ke English (US)
-  node epubcreator.js validate            Validasi EPUB terakhir dengan epubcheck
-  node epubcreator.js --version           Tampilkan versi`,
-    help_structure: `
-Struktur direktori:
-  ./
-  ├── config.txt          ← metadata buku (wajib)
-  ├── ord.txt             ← daftar urutan bab (opsional)
-  ├── Docs/               ← tempat file .docx sumber (untuk docx2md)
-  ├── Markdowns/          ← tempat file .md sumber (untuk convertch)
-  ├── node_modules/       ← dependensi (otomatis di-download via updatemodule)
-  ├── EPUB/
-  │   ├── images/
-  │   │   └── cover.png   ← WAJIB
-  │   ├── audiovideo/     ← opsional
-  │   ├── bab1.xhtml      ← bab-bab (nama bebas, di root EPUB/)
-  │   └── ...
-  └── builds/
-      └── [nama-folder].epub   ← hasil build`,
-    help_deps: `
-Catatan: pastikan sudah install dependensi utama:
-  npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4
-Untuk fitur DOCX:  npm install mammoth@1.6.0 (opsional)
-Untuk fitur import: npm install adm-zip@0.5.10 xml2js@0.5.0 (opsional)
-Untuk validasi: install epubcheck (https://github.com/w3c/epubcheck)
-  Atau jalankan "node epubcreator.js updatemodule" untuk download otomatis.`,
-  },
-
-  en: {
-    // Common
-    lang_changed: 'Language changed to {lang}.',
-    lang_prompt: 'Choose Language:',
-    lang_choice_1: '[1] 🇮🇩 Indonesian',
-    lang_choice_2: '[2] 🇺🇸 English (US)',
-    lang_enter: 'Enter number (1/2): ',
-    lang_invalid: 'Invalid choice. Please enter 1 or 2.',
-    lang_saved: 'Language saved to {file}.',
-
-    // Dependency errors
-    missing_dep: '❌ Module "{mod}" (v{version}) not found. Install with:\n  npm install {mod}@{version}\n',
-    marked_old: '❌ "marked" version is too old. Reinstall with:\n  npm install marked@4.0.0\n',
-
-    // Common logs
-    cancelled: 'Cancelled.',
-    file_exists: '{file} already exists. Overwrite? (y/n) ',
-    overwritten: '{file} overwritten.',
-    not_modified: '{file} unchanged.',
-    created: '{file} created.',
-    dir_created: 'Directory structure created at {dirs}',
-    ready: '✅ Directory and template files ready.',
-
-    // createchapter
-    enter_filename: 'Chapter filename (e.g. bab1.xhtml): ',
-    filename_empty: 'Filename cannot be empty.',
-    enter_title: 'Chapter title: ',
-    chapter_created: 'Chapter created: {path}',
-
-    // convertch (MD→XHTML)
-    markdowns_not_found: 'Markdowns/ directory not found. Create with "node epubcreator.js createdir"',
-    path_not_found: 'Path not found: {path}',
-    must_be_md: 'File must have .md extension',
-    no_md_found: 'No .md files found in that directory.',
-    md_count: 'Found {count} .md files.',
-    xhtml_exists: '{count} .xhtml files already exist. (Y) Overwrite all, (N) Copy all to Markdowns, (C) Cancel: ',
-    convert_cancelled: 'Conversion cancelled.',
-    copy_md: '📋 Copy {file} to {dest}',
-    md_already_exists: 'ℹ️  {file} already exists in Markdowns, skipping copy.',
-    copy_done: 'Done: {count} .md files copied to Markdowns/.',
-    skip_file: 'Skipping {file}',
-    convert_success: '✅ Successfully converted: {file}',
-    convert_fail: 'Failed to parse Markdown {file}: {error}',
-    convert_summary: 'Done: {success} out of {total} files converted successfully.',
-    invalid_path: 'Path is not a valid file or directory.',
-    xhtml_already_exists: '{file} already exists. (Y) Overwrite, (N) Copy to Markdowns, (C) Cancel: ',
-
-    // convertch xhtml2md
-    epub_not_found: 'EPUB/ directory not found.',
-    must_be_xhtml: 'File must have .xhtml extension',
-    skip_cover: 'Skipping {file} (excluded)',
-    no_xhtml_found: 'No valid .xhtml files found in that directory.',
-    xhtml_count: 'Found {count} .xhtml files.',
-    convertx_success: '✅ Successfully converted: {file}',
-    convertx_fail: 'Failed to convert {file}: {error}',
-    convertx_summary: 'Done: {success} out of {total} files converted successfully.',
-
-    // convertch docx2md
-    docx_no_files: 'No .docx files found.',
-    docx_processing: '📄 Processing: {file}',
-    docx_no_images: 'ℹ️ Image extraction from DOCX not yet supported; images will be ignored.',
-    docx_heading_mode_warn: '⚠️ Font size based heading mode is used (with configured thresholds).',
-    docx_nosplit_mode: 'ℹ️ No-split mode (--nosplit) is active, all content will be merged into one file.',
-
-    // split
-    split_usage: 'node epubcreator.js split <path> [--output dir] [--force]',
-    split_processing: 'Processing {file} ...',
-    split_no_heading: 'No heading level 2 (##) found in {file}, entire content saved as one file.',
-    split_parts: 'Split into {count} parts.',
-    split_created: 'File created: {file}',
-    split_summary: 'Done: {success} out of {total} files processed successfully.',
-    split_output_dir: 'Output directory: {dir}',
-
-    // merge
-    merge_usage: 'node epubcreator.js merge <path> [--output file] [--force]',
-    merge_no_files: 'No .md files found in {path}.',
-    merge_processing: 'Merging {count} files ...',
-    merge_created: 'Merged file created: {file}',
-    merge_summary: '✅ {count} files successfully merged into {output}.',
-    merge_output_file: 'Output: {file}',
-
-    // build
-    config_not_found: 'config.txt not found! Run: node epubcreator.js createconfig',
-    epub_dir_not_found: 'EPUB/ directory not found!',
-    title_missing: 'config.txt must have "title"',
-    author_missing: 'config.txt must have "author"',
-    no_chapters: 'No chapters (.xhtml files) found in EPUB/ (excluding cover/toc/nav)',
-    chapters_found: 'Found {count} chapters.',
-    cover_missing: '⚠️  No cover.png found in EPUB/images/ — cover will be without image.',
-    cover_found: 'Cover: {file}',
-    media_summary: 'Images: {images} | Audio/Video: {audio}',
-    epub_built: '✅ EPUB built successfully: {path} ({size} KB)',
-    zip_error: 'Failed to create ZIP: {error}',
-    warning_ord_not_found: 'Warning: file "{file}" in ord.txt not found in EPUB/',
-
-    // import
-    extract_no_assets: '❌ Folder assets/node_modules not found in archive.',
-    import_no_epub: 'No .epub file found in this directory.',
-    import_select: 'Select EPUB file to import:',
-    import_select_prompt: 'Enter number (1-{count}): ',
-    import_invalid_choice: 'Invalid choice.',
-    import_extracting: '📦 Extracting {file} ...',
-    import_done: '✅ Import completed.',
-    import_summary: '   Chapters: {chapters}, Images: {images}, Audio/Video: {audio}',
-    import_hint: '💡 Run "node epubcreator.js convertch xhtml2md" to convert .xhtml to .md if needed.',
-    import_skip_non_spine: 'Skipping non-chapter file: {file}',
-    import_cover_found: 'Cover found: {file}',
-    import_force_overwrite: 'Overwriting existing files (--force).',
-
-    // updatemodule
-    node_modules_missing: 'node_modules not found.',
-    download_confirm: 'Download pre-built dependencies from repository? (y/n) ',
-    download_start: '📥 Downloading bundle ...',
-    download_complete: '✅ Download complete. Extracting ...',
-    download_failed: '❌ Failed to download bundle: {error}',
-    extract_failed: '❌ Failed to extract node_modules: {error}',
-    extract_success: '✅ node_modules extracted successfully.',
-    tar_not_found: '❌ "tar" command not found. Please ensure tar is installed (Linux/macOS/Termux) or use Git Bash on Windows.',
-    update_confirm: 'This will replace your existing node_modules folder. Continue? (y/n) ',
-    update_force: 'Overwriting node_modules (--force).',
-
-    // validate
-    validate_no_epub: 'No .epub file found in builds/',
-    validate_start: '🔍 Validating {file} ...',
-    validate_ok: '✅ Validation passed for {file}',
-    validate_fail: '❌ Validation failed:\n{output}',
-
-    // debug
-    debug_usage: 'node epubcreator.js debug  → Watch changes in Markdowns/, auto convertch + build',
-    debug_start: 'Watching Markdowns/ for changes... Press Ctrl+C to stop.',
-    debug_change: 'Changes detected, rebuilding...',
-    debug_error: 'Error during rebuild: {error}',
-    debug_watch_fallback: 'Warning: recursive watch not supported, watching root directory only (subdirectory changes may not trigger).',
-    debug_watching_again: 'Watching again...',
-
-    // command unknown
-    unknown_command: 'Unknown command: {cmd}',
-    usage_hint: 'Use: createconfig | createchapter | createdir | convertch | conv | split | merge | build | debug | import | updatemodule | lang-id | lang-en | validate | --version',
-
-    // Help
-    help_title: '📚 epubcreator — CLI for compiling directory to EPUB  (v{version})',
-    help_commands: `
-  node epubcreator.js createconfig        Create config.txt template
-  node epubcreator.js createchapter       Create chapter .xhtml template file
-  node epubcreator.js createdir           Create directory structure and template files
+  // Help
+  help_title: '📚 epubcreator — CLI for compiling directory to EPUB  (v{version})',
+  help_commands: `
+  node epubcreator.js createdir           Create directory structure and download tool config
   node epubcreator.js convertch           Convert .md → .xhtml (default, looks in Markdowns/)
   node epubcreator.js convertch xhtml2md  Convert .xhtml → .md
   node epubcreator.js convertch docx2md   Convert .docx → .md (split by ##)
@@ -388,11 +204,11 @@ Untuk validasi: install epubcheck (https://github.com/w3c/epubcheck)
   node epubcreator.js import              Import .epub file from current directory
   node epubcreator.js updatemodule        Download/update node_modules from repo
   node epubcreator.js updatemodule --force Update without confirmation
-  node epubcreator.js lang-id             Switch language to Indonesian
-  node epubcreator.js lang-en             Switch language to English (US)
+  node epubcreator.js updateconfig        Download/update .epubcreator from repo (config branch)
+  node epubcreator.js settings            Interactive tool settings
   node epubcreator.js validate            Validate latest EPUB with epubcheck
   node epubcreator.js --version           Show version`,
-    help_structure: `
+  help_structure: `
 Directory structure:
   ./
   ├── config.txt          ← book metadata (required)
@@ -400,6 +216,11 @@ Directory structure:
   ├── Docs/               ← source .docx files (for docx2md)
   ├── Markdowns/          ← source .md files (for convertch)
   ├── node_modules/       ← dependencies (auto-downloaded via updatemodule)
+  ├── .epubcreator/       ← tool settings and language files (auto-downloaded via createdir/updateconfig)
+  │   ├── settings.txt
+  │   └── lang/
+  │       ├── en.txt
+  │       └── id.txt
   ├── EPUB/
   │   ├── images/
   │   │   └── cover.png   ← REQUIRED
@@ -408,77 +229,99 @@ Directory structure:
   │   └── ...
   └── builds/
       └── [folder-name].epub   ← build result`,
-    help_deps: `
+  help_deps: `
 Note: make sure main dependencies are installed:
   npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4
 For DOCX feature:  npm install mammoth@1.6.0 (optional)
 For import feature: npm install adm-zip@0.5.10 xml2js@0.5.0 (optional)
 For validation: install epubcheck (https://github.com/w3c/epubcheck)
   Or run "node epubcreator.js updatemodule" to download automatically.`,
-  }
 };
 
-// ─── Fungsi terjemahan ──────────────────────────────────────────────────
+// ─── Variabel global ──────────────────────────────────────────────────
+let currentLang = 'en';
+let messages = { ...FALLBACK_MESSAGES }; // akan ditimpa oleh file bahasa jika ada
+
+// ─── Fungsi untuk memuat bahasa dari file ─────────────────────────────
+function loadLanguageFile(lang) {
+  const langFile = path.join(LANG_DIR, `${lang}.txt`);
+  if (fs.existsSync(langFile)) {
+    try {
+      const content = fs.readFileSync(langFile, 'utf8');
+      const lines = content.split('\n');
+      const loaded = {};
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const idx = trimmed.indexOf('=');
+        if (idx === -1) continue;
+        const key = trimmed.slice(0, idx).trim();
+        const value = trimmed.slice(idx + 1).trim();
+        if (key && value) {
+          loaded[key] = value;
+        }
+      }
+      // Timpa fallback dengan yang dimuat
+      messages = { ...FALLBACK_MESSAGES, ...loaded };
+    } catch (_) {
+      // fallback tetap
+    }
+  } else {
+    // Jika file tidak ada, gunakan fallback (sudah di-set)
+  }
+}
+
+// ─── Fungsi untuk memuat settings ─────────────────────────────────────
+function loadSettings() {
+  const settingsPath = path.join(process.cwd(), SETTINGS_FILE);
+  const defaults = {
+    lang: 'en',
+    watch_delay: '500',
+    auto_build: 'false',
+    overwrite_policy: 'ask',
+  };
+  if (!fs.existsSync(settingsPath)) {
+    // Buat default settings
+    ensureDir(TOOL_DIR);
+    const content = Object.entries(defaults).map(([k, v]) => `${k} = ${v}`).join('\n');
+    fs.writeFileSync(settingsPath, content, 'utf8');
+    return defaults;
+  }
+
+  const content = fs.readFileSync(settingsPath, 'utf8');
+  const lines = content.split('\n');
+  const settings = { ...defaults };
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const idx = trimmed.indexOf('=');
+    if (idx === -1) continue;
+    const key = trimmed.slice(0, idx).trim();
+    const value = trimmed.slice(idx + 1).trim();
+    if (key && value) {
+      settings[key] = value;
+    }
+  }
+  return settings;
+}
+
+// ─── Fungsi terjemahan ─────────────────────────────────────────────────
 function t(key, params = {}) {
-  let str = messages[currentLang]?.[key] || messages.id[key] || key;
+  let str = messages[key] || FALLBACK_MESSAGES[key] || key;
   for (const [k, v] of Object.entries(params)) {
     str = str.replace(new RegExp(`{${k}}`, 'g'), v);
   }
   return str;
 }
 
-// ─── Fungsi log dengan terjemahan ──────────────────────────────────────
+// ─── Log dengan terjemahan ────────────────────────────────────────────
 function logI18n(key, params = {}, type = 'info') {
   const icons = { info: 'ℹ️', success: '✅', warn: '⚠️', error: '❌' };
   const msg = t(key, params);
   console.log(`${icons[type] || ''} ${msg}`);
 }
 
-// ─── Load atau tanya bahasa ────────────────────────────────────────────
-function loadOrAskLanguage() {
-  const configPath = path.join(process.cwd(), CONFIG_FILE);
-  if (fs.existsSync(configPath)) {
-    try {
-      const content = fs.readFileSync(configPath, 'utf8');
-      const match = content.match(/^language\s*=\s*(id|en)\b/m);
-      if (match) return match[1];
-    } catch (_) { /* ignore */ }
-  }
-  // Tidak ada atau tidak valid → tanya interaktif
-  return askLanguageInteractive();
-}
-
-function askLanguageInteractive() {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  return new Promise((resolve) => {
-    console.log(t('lang_prompt'));
-    console.log(t('lang_choice_1'));
-    console.log(t('lang_choice_2'));
-    rl.question(t('lang_enter'), (answer) => {
-      rl.close();
-      let lang = 'id';
-      if (answer.trim() === '2') {
-        lang = 'en';
-      } else if (answer.trim() === '1') {
-        lang = 'id';
-      } else {
-        console.log(t('lang_invalid'));
-        // default id
-      }
-      // Simpan ke file
-      const configPath = path.join(process.cwd(), CONFIG_FILE);
-      fs.writeFileSync(configPath, `language=${lang}`, 'utf8');
-      console.log(t('lang_saved', { file: CONFIG_FILE }));
-      resolve(lang);
-    });
-  });
-}
-
-// ─── Cek dependensi (setelah bahasa) ──────────────────────────────────
+// ─── Cek dependensi ──────────────────────────────────────────────────
 function checkDependencies() {
   try {
     require.resolve('archiver');
@@ -506,7 +349,6 @@ function checkDependencies() {
     process.exit(1);
   }
 
-  // return required modules for later use
   return {
     archiver: require('archiver'),
     marked: require('marked'),
@@ -544,20 +386,16 @@ function escapeXml(str) {
   }[m]));
 }
 
-// ─── Helper untuk timestamp EPUB tanpa milidetik ──────────────────────
 function getEpubTimestamp() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
-  // Hasil: "2026-08-16T14:30:00Z" ← valid!
 }
 
-// ─── Ekstrak judul dari Markdown (hanya heading level 2) ──────────────
 function extractTitleFromMd(content) {
   const match = content.match(/^##\s+(.+)$/m);
   if (match) return match[1].trim();
   return null;
 }
 
-// ─── Cari file .md secara rekursif ────────────────────────────────────
 function walkMdFiles(dir) {
   let results = [];
   const list = fs.readdirSync(dir);
@@ -573,7 +411,6 @@ function walkMdFiles(dir) {
   return results;
 }
 
-// ─── Cari file .xhtml secara rekursif (kecuali cover/toc/nav) ────────
 function walkXhtmlFiles(dir) {
   const exclude = ['cover.xhtml', 'toc.xhtml', 'nav.xhtml'];
   let results = [];
@@ -593,7 +430,6 @@ function walkXhtmlFiles(dir) {
   return results;
 }
 
-// ─── Renderer XHTML untuk marked ──────────────────────────────────────
 function createXhtmlRenderer(marked) {
   const renderer = new marked.Renderer();
   renderer.image = function(href, title, text) {
@@ -607,7 +443,6 @@ function createXhtmlRenderer(marked) {
   return renderer;
 }
 
-// ─── Baca mapping DOCX dari config ─────────────────────────────────
 function readDocxMapping() {
   const configPath = path.join(process.cwd(), 'config.txt');
   if (!fs.existsSync(configPath)) return null;
@@ -638,11 +473,8 @@ function readDocxMapping() {
   return Object.keys(mapping).length > 0 ? mapping : null;
 }
 
-// ─── Sesuaikan heading berdasarkan mapping (FIXED) ──────────────────
 function adjustHeadings(html, mapping) {
-  // Mode 1: Tanpa mapping → gunakan class Word (heading1, heading2, heading3)
   if (!mapping) {
-    // Ganti seluruh paragraf dengan class heading menjadi tag heading
     let modified = html;
     modified = modified.replace(/<p\s+class="heading1"[^>]*>([\s\S]*?)<\/p>/gi, '<h1>$1</h1>');
     modified = modified.replace(/<p\s+class="heading2"[^>]*>([\s\S]*?)<\/p>/gi, '<h2>$1</h2>');
@@ -650,14 +482,12 @@ function adjustHeadings(html, mapping) {
     return modified;
   }
 
-  // Mode 2: Dengan mapping → gunakan ukuran font (dalam pt)
   const thresholds = [
     { level: 1, size: mapping.heading1 || 24 },
     { level: 2, size: mapping.heading2 || 18 },
     { level: 3, size: mapping.heading3 || 14 }
   ].sort((a, b) => b.size - a.size);
 
-  // Coba gunakan cheerio jika tersedia (lebih akurat)
   let useCheerio = false;
   try {
     require.resolve('cheerio');
@@ -688,8 +518,6 @@ function adjustHeadings(html, mapping) {
     });
     return $.html();
   } else {
-    // Fallback: regex yang mengganti seluruh <p> dengan style font-size
-    // Menangkap tag pembuka (termasuk style) dan konten sampai </p>
     const pRegex = /<p\s+([^>]*style="[^"]*font-size:(\d+)pt[^"]*"[^>]*)>([\s\S]*?)<\/p>/gi;
     let modified = html;
     modified = modified.replace(pRegex, (match, attrs, sizeStr, content) => {
@@ -701,9 +529,8 @@ function adjustHeadings(html, mapping) {
       if (level > 0) {
         return `<h${level}>${content}</h${level}>`;
       }
-      return match; // pertahankan sebagai paragraf
+      return match;
     });
-    // Tampilkan peringatan sekali saja (tidak berulang)
     if (!adjustHeadings._warned) {
       logI18n('docx_heading_mode_warn', {}, 'warn');
       adjustHeadings._warned = true;
@@ -712,7 +539,7 @@ function adjustHeadings(html, mapping) {
   }
 }
 
-// ─── Download dan ekstrak node_modules ────────────────────────────────
+// ─── Download & ekstrak (generik) ─────────────────────────────────────
 function isTarAvailable() {
   try {
     execSync('tar --version', { stdio: 'ignore' });
@@ -726,14 +553,12 @@ function downloadFile(url, destPath) {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(destPath);
     const request = https.get(url, (response) => {
-      // Handle redirect
       if (response.statusCode === 302 || response.statusCode === 301) {
         const redirectUrl = response.headers.location;
         if (!redirectUrl) {
           reject(new Error('Redirect without location header'));
           return;
         }
-        // Recursive call with redirect
         downloadFile(redirectUrl, destPath).then(resolve).catch(reject);
         return;
       }
@@ -759,17 +584,15 @@ function downloadFile(url, destPath) {
   });
 }
 
-function extractTarGz(tarballPath, destDir = '.') {
+function extractTarGz(tarballPath, destDir = '.', stripComponents = 0, srcPath = '') {
   return new Promise((resolve, reject) => {
     if (!isTarAvailable()) {
       reject(new Error(t('tar_not_found')));
       return;
     }
 
-    // 1. Dapatkan nama folder top-level dari arsip
     let topFolder;
     try {
-      // Gunakan tar -tf untuk listing, ambil baris pertama
       const listOutput = execSync(`tar -tf "${tarballPath}" | head -1`, { encoding: 'utf8' });
       const firstLine = listOutput.trim();
       if (!firstLine) throw new Error('Archive is empty or invalid');
@@ -780,40 +603,44 @@ function extractTarGz(tarballPath, destDir = '.') {
       return;
     }
 
-    // 2. Cek apakah assets/node_modules ada di dalam
-    const checkCmd = `tar -tf "${tarballPath}" | grep -q "^${topFolder}/assets/node_modules/"`;
-    try {
-      execSync(checkCmd, { stdio: 'ignore' });
-    } catch (_) {
-      reject(new Error(t('extract_no_assets')));
-      return;
-    }
-
-    // 3. Ekstrak dengan path pasti (tanpa wildcard)
-    const srcPath = `${topFolder}/assets/node_modules`;
-    const cmd = `tar -xzf "${tarballPath}" --strip-components=2 -C "${destDir}" "${srcPath}"`;
-    try {
-      execSync(cmd, { stdio: 'inherit' });
-      resolve();
-    } catch (err) {
-      reject(err);
+    // Jika srcPath diberikan, cek keberadaannya
+    if (srcPath) {
+      const checkCmd = `tar -tf "${tarballPath}" | grep -q "^${topFolder}/${srcPath}"`;
+      try {
+        execSync(checkCmd, { stdio: 'ignore' });
+      } catch (_) {
+        reject(new Error(t('extract_no_assets')));
+        return;
+      }
+      const fullSrc = `${topFolder}/${srcPath}`;
+      const cmd = `tar -xzf "${tarballPath}" --strip-components=${stripComponents+1} -C "${destDir}" "${fullSrc}"`;
+      try {
+        execSync(cmd, { stdio: 'inherit' });
+        resolve();
+      } catch (err) {
+        reject(err);
+      }
+    } else {
+      // Ekstrak semua
+      const cmd = `tar -xzf "${tarballPath}" --strip-components=${stripComponents} -C "${destDir}"`;
+      try {
+        execSync(cmd, { stdio: 'inherit' });
+        resolve();
+      } catch (err) {
+        reject(err);
+      }
     }
   });
 }
 
-async function downloadAndExtractModules() {
-  const cwd = process.cwd();
-  const tarballPath = path.join(cwd, 'bundle.tar.gz');
-  const url = 'https://github.com/YogabyAllwaysever/epubcreator.js/archive/refs/heads/main.tar.gz';
-
-  logI18n('download_start', {}, 'info');
+async function downloadAndExtract(url, destDir, srcPath, stripComponents = 0) {
+  const tarballPath = path.join(process.cwd(), 'bundle.tar.gz');
   try {
+    logI18n('download_start', {}, 'info');
     await downloadFile(url, tarballPath);
     logI18n('download_complete', {}, 'success');
-    await extractTarGz(tarballPath, cwd);
-    logI18n('extract_success', {}, 'success');
+    await extractTarGz(tarballPath, destDir, stripComponents, srcPath);
   } catch (err) {
-    logI18n('download_failed', { error: err.message }, 'error');
     throw err;
   } finally {
     if (fs.existsSync(tarballPath)) {
@@ -822,147 +649,11 @@ async function downloadAndExtractModules() {
   }
 }
 
-// ─── Command: createconfig ─────────────────────────────────────────────
-async function cmdCreateConfig() {
-  const configPath = path.join(process.cwd(), 'config.txt');
-  if (fs.existsSync(configPath)) {
-    const answer = await question(t('file_exists', { file: 'config.txt' }));
-    if (answer.toLowerCase() !== 'y') {
-      logI18n('cancelled', {}, 'warn');
-      rl.close();
-      return;
-    }
-  }
-
-  const template = `# ============================================================
-#  METADATA BUKU  —  edit nilai di bawah ini sesuai kebutuhan
-# ============================================================
-
-# Judul utama (wajib)
-title: Judul Buku
-
-# Subjudul (opsional)
-subtitle: Subjudul
-
-# Volume / jilid (opsional)
-volume: Vol. 1
-
-# Penulis / creator (wajib)
-author: Nama Penulis
-
-# Bahasa (default: en)
-language: en
-
-# Identifier unik (URN atau ISBN), kosongkan untuk otomatis
-identifier: 
-
-# Tanggal terbit (YYYY-MM-DD), kosongkan pakai hari ini
-date: 
-
-# Penerbit (opsional)
-publisher: 
-
-# Deskripsi / sinopsis (opsional)
-description: Deskripsi singkat buku ini.
-
-# Subjek / kategori, pisahkan dengan koma
-subjects: Fiksi, Petualangan
-
-# Nama seri (opsional)
-series_name: 
-
-# Nomor seri (opsional)
-series_number: 
-
-# Kontributor tambahan: nama|peran, nama|peran, ...
-# Peran: aut (penulis), edt (editor), ill (ilustrator), dll.
-contributors: 
-
-# Judul tambahan (opsional), pisahkan dengan koma
-extra_titles: 
-
-# ============================================================
-#  KONVERSI DOCX → MARKDOWN (opsional)
-# ============================================================
-# [docx-mapping]
-# Jika bagian ini ada, konversi akan menggunakan ukuran font (dalam pt)
-# Jika tidak ada, akan menggunakan style Word (Heading 1, Heading 2, dll.)
-# heading1 = 24
-# heading2 = 18
-# heading3 = 14
-
-# ============================================================
-#  STRUKTUR DIREKTORI YANG DIPERLUKAN SAAT BUILD:
-#
-#   ./
-#   ├── config.txt
-#   ├── ord.txt          ← opsional, daftar urutan bab (satu baris satu .xhtml)
-#   ├── Docs/            ← tempat file .docx sumber (untuk docx2md)
-#   ├── Markdowns/       ← tempat file .md sumber (untuk convertch)
-#   └── EPUB/
-#       ├── images/
-#       │   └── cover.png   ← WAJIB ada
-#       ├── audiovideo/     ← opsional
-#       ├── bab1.xhtml      ← bab-bab (bisa nama apa saja, asal di root EPUB/)
-#       ├── bab2.xhtml
-#       └── ...
-#
-#  Jalankan:  node epubcreator.js build
-# ============================================================
-`;
-
-  fs.writeFileSync(configPath, template, 'utf8');
-  logI18n('created', { file: configPath }, 'success');
-  rl.close();
-}
-
-// ─── Command: createchapter ────────────────────────────────────────────
-async function cmdCreateChapter() {
-  const epubDir = path.join(process.cwd(), 'EPUB');
-  ensureDir(epubDir);
-
-  const filename = await question(t('enter_filename'));
-  if (!filename || !filename.trim()) {
-    logI18n('filename_empty', {}, 'error');
-    rl.close();
-    return;
-  }
-
-  const filepath = path.join(epubDir, filename.trim());
-  if (fs.existsSync(filepath)) {
-    const overwrite = await question(t('file_exists', { file: filename.trim() }));
-    if (overwrite.toLowerCase() !== 'y') {
-      logI18n('cancelled', {}, 'warn');
-      rl.close();
-      return;
-    }
-  }
-
-  const title = await question(t('enter_title')) || path.basename(filename, path.extname(filename));
-
-  const template = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
-<head>
-  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${escapeXml(title)}</title>
-</head>
-<body>
-  <h1>${escapeXml(title)}</h1>
-  <p>Tulis konten bab di sini…</p>
-</body>
-</html>
-`;
-
-  fs.writeFileSync(filepath, template, 'utf8');
-  logI18n('chapter_created', { path: filepath }, 'success');
-  rl.close();
-}
-
 // ─── Command: createdir ────────────────────────────────────────────────
 async function cmdCreateDir() {
   const cwd = process.cwd();
+
+  // Buat struktur proyek
   const epubDir = path.join(cwd, 'EPUB');
   const imagesDir = path.join(epubDir, 'images');
   const audioDir = path.join(epubDir, 'audiovideo');
@@ -980,11 +671,8 @@ async function cmdCreateDir() {
   const dirs = [epubDir, markdownsDir, docsDir].join(', ');
   logI18n('dir_created', { dirs }, 'info');
 
-  // Buat config.txt
-  if (fs.existsSync(configPath)) {
-    const ans = await question(t('file_exists', { file: 'config.txt' }));
-    if (ans.toLowerCase() === 'y') {
-      const template = `# ============================================================
+  // Buat config.txt template (jika belum ada)
+  const configTemplate = `# ============================================================
 #  METADATA BUKU  —  edit nilai di bawah ini sesuai kebutuhan
 # ============================================================
 
@@ -1060,114 +748,72 @@ extra_titles:
 #  Jalankan:  node epubcreator.js build
 # ============================================================
 `;
-      fs.writeFileSync(configPath, template, 'utf8');
+  if (!fs.existsSync(configPath)) {
+    fs.writeFileSync(configPath, configTemplate, 'utf8');
+    logI18n('created', { file: 'config.txt' }, 'success');
+  } else {
+    // tanya timpa?
+    const ans = await question(t('file_exists', { file: 'config.txt' }));
+    if (ans.toLowerCase() === 'y') {
+      fs.writeFileSync(configPath, configTemplate, 'utf8');
       logI18n('overwritten', { file: 'config.txt' }, 'success');
     } else {
       logI18n('not_modified', { file: 'config.txt' }, 'warn');
     }
-  } else {
-    const template = `# ============================================================
-#  METADATA BUKU  —  edit nilai di bawah ini sesuai kebutuhan
-# ============================================================
-
-# Judul utama (wajib)
-title: Judul Buku
-
-# Subjudul (opsional)
-subtitle: Subjudul
-
-# Volume / jilid (opsional)
-volume: Vol. 1
-
-# Penulis / creator (wajib)
-author: Nama Penulis
-
-# Bahasa (default: en)
-language: en
-
-# Identifier unik (URN atau ISBN), kosongkan untuk otomatis
-identifier: 
-
-# Tanggal terbit (YYYY-MM-DD), kosongkan pakai hari ini
-date: 
-
-# Penerbit (opsional)
-publisher: 
-
-# Deskripsi / sinopsis (opsional)
-description: Deskripsi singkat buku ini.
-
-# Subjek / kategori, pisahkan dengan koma
-subjects: Fiksi, Petualangan
-
-# Nama seri (opsional)
-series_name: 
-
-# Nomor seri (opsional)
-series_number: 
-
-# Kontributor tambahan: nama|peran, nama|peran, ...
-# Peran: aut (penulis), edt (editor), ill (ilustrator), dll.
-contributors: 
-
-# Judul tambahan (opsional), pisahkan dengan koma
-extra_titles: 
-
-# ============================================================
-#  KONVERSI DOCX → MARKDOWN (opsional)
-# ============================================================
-# [docx-mapping]
-# Jika bagian ini ada, konversi akan menggunakan ukuran font (dalam pt)
-# Jika tidak ada, akan menggunakan style Word (Heading 1, Heading 2, dll.)
-# heading1 = 24
-# heading2 = 18
-# heading3 = 14
-
-# ============================================================
-#  STRUKTUR DIREKTORI YANG DIPERLUKAN SAAT BUILD:
-#
-#   ./
-#   ├── config.txt
-#   ├── ord.txt          ← opsional, daftar urutan bab (satu baris satu .xhtml)
-#   ├── Docs/            ← tempat file .docx sumber (untuk docx2md)
-#   ├── Markdowns/       ← tempat file .md sumber (untuk convertch)
-#   └── EPUB/
-#       ├── images/
-#       │   └── cover.png   ← WAJIB ada
-#       ├── audiovideo/     ← opsional
-#       ├── bab1.xhtml      ← bab-bab (bisa nama apa saja, asal di root EPUB/)
-#       ├── bab2.xhtml
-#       └── ...
-#
-#  Jalankan:  node epubcreator.js build
-# ============================================================
-`;
-    fs.writeFileSync(configPath, template, 'utf8');
-    logI18n('created', { file: 'config.txt' }, 'success');
   }
 
-  // Buat ord.txt
-  if (fs.existsSync(ordPath)) {
+  // Buat ord.txt template
+  const ordTemplate = '# Daftar urutan bab (satu baris satu .xhtml)\n';
+  if (!fs.existsSync(ordPath)) {
+    fs.writeFileSync(ordPath, ordTemplate, 'utf8');
+    logI18n('created', { file: 'ord.txt' }, 'success');
+  } else {
     const ans = await question(t('file_exists', { file: 'ord.txt' }));
     if (ans.toLowerCase() === 'y') {
-      fs.writeFileSync(ordPath, '# Daftar urutan bab (satu baris satu .xhtml)\n', 'utf8');
+      fs.writeFileSync(ordPath, ordTemplate, 'utf8');
       logI18n('overwritten', { file: 'ord.txt' }, 'success');
     } else {
       logI18n('not_modified', { file: 'ord.txt' }, 'warn');
     }
-  } else {
-    fs.writeFileSync(ordPath, '# Daftar urutan bab (satu baris satu .xhtml)\n', 'utf8');
-    logI18n('created', { file: 'ord.txt' }, 'success');
   }
 
-  // ─── Fitur auto-fetch node_modules ──────────────────────────────────
+  // ─── Download .epubcreator dari branch config ──────────────────────
+  const epubCreatorDir = path.join(cwd, TOOL_DIR);
+  if (fs.existsSync(epubCreatorDir)) {
+    const ans = await question(`.epubcreator already exists. Update from config branch? (y/n) `);
+    if (ans.toLowerCase() === 'y') {
+      logI18n('createdir_update_config', {}, 'info');
+      try {
+        const url = 'https://github.com/YogabyAllwaysever/epubcreator.js/archive/refs/heads/config.tar.gz';
+        await downloadAndExtract(url, cwd, '.epubcreator', 1); // strip 1 komponen
+        logI18n('updateconfig_success', {}, 'success');
+      } catch (err) {
+        logI18n('updateconfig_failed', { error: err.message }, 'error');
+      }
+    } else {
+      logI18n('createdir_skip_update', {}, 'warn');
+    }
+  } else {
+    logI18n('createdir_update_config', {}, 'info');
+    try {
+      const url = 'https://github.com/YogabyAllwaysever/epubcreator.js/archive/refs/heads/config.tar.gz';
+      await downloadAndExtract(url, cwd, '.epubcreator', 1);
+      logI18n('updateconfig_success', {}, 'success');
+    } catch (err) {
+      logI18n('updateconfig_failed', { error: err.message }, 'error');
+    }
+  }
+
+  // ─── Auto-fetch node_modules ──────────────────────────────────────
   const nodeModulesDir = path.join(cwd, 'node_modules');
   if (!fs.existsSync(nodeModulesDir)) {
     logI18n('node_modules_missing', {}, 'warn');
     const ans = await question(t('download_confirm'));
     if (ans.toLowerCase() === 'y') {
       try {
-        await downloadAndExtractModules();
+        const url = 'https://github.com/YogabyAllwaysever/epubcreator.js/archive/refs/heads/main.tar.gz';
+        await downloadAndExtract(url, cwd, 'assets/node_modules', 2);
+        logI18n('extract_success', {}, 'success');
       } catch (err) {
         logI18n('extract_failed', { error: err.message }, 'error');
       }
@@ -1175,14 +821,14 @@ extra_titles:
       logI18n('cancelled', {}, 'warn');
     }
   } else {
-    log('ℹ️ node_modules sudah ada, tidak diunduh ulang.', 'info');
+    log('ℹ️ node_modules already exists, skipping download.', 'info');
   }
 
   logI18n('ready', {}, 'success');
   rl.close();
 }
 
-// ─── Konversi satu file .md → .xhtml ─────────────────────────────────
+// ─── Konversi MD→XHTML (satu file) ──────────────────────────────────
 async function convertOneMdFile(mdFile, outputDir, force = false, marked) {
   const relPath = path.relative(process.cwd(), mdFile);
   const markdownsBase = path.join(process.cwd(), 'Markdowns');
@@ -1251,12 +897,11 @@ async function convertOneMdFile(mdFile, outputDir, force = false, marked) {
   return true;
 }
 
-// ─── Konversi semua .md di direktori (tanpa interaksi) ──────────────
 async function convertAllMd(markdownsDir, epubDir, force, marked) {
   const mdFiles = walkMdFiles(markdownsDir);
   if (mdFiles.length === 0) {
     logI18n('no_md_found', {}, 'warn');
-    return;
+    return 0;
   }
   let successCount = 0;
   for (const md of mdFiles) {
@@ -1264,9 +909,9 @@ async function convertAllMd(markdownsDir, epubDir, force, marked) {
     if (ok) successCount++;
   }
   logI18n('convert_summary', { success: successCount, total: mdFiles.length }, 'info');
+  return successCount;
 }
 
-// ─── Command: MD → XHTML (perilaku lama convertch) ────────────────────
 async function cmdConvertCh(filePath, force = false, marked) {
   let target;
   if (!filePath) {
@@ -1348,6 +993,14 @@ async function cmdConvertCh(filePath, force = false, marked) {
       if (ok) successCount++;
     }
     logI18n('convert_summary', { success: successCount, total: mdFiles.length }, 'info');
+
+    // Auto-build jika settings mengizinkan
+    const settings = loadSettings();
+    if (settings.auto_build === 'true' && successCount > 0) {
+      log('Auto-build enabled, building...', 'info');
+      await buildEpub(require('archiver'));
+    }
+
     rl.close();
     return;
   }
@@ -1356,7 +1009,7 @@ async function cmdConvertCh(filePath, force = false, marked) {
   rl.close();
 }
 
-// ─── Konversi satu file .xhtml → .md ─────────────────────────────────
+// ─── XHTML→MD ─────────────────────────────────────────────────────────
 function convertOneXhtmlFile(xhtmlFile, outputDir, TurndownService) {
   const epubBase = path.join(process.cwd(), 'EPUB');
   let relPath;
@@ -1394,7 +1047,6 @@ function convertOneXhtmlFile(xhtmlFile, outputDir, TurndownService) {
   return true;
 }
 
-// ─── Command: XHTML → MD (xhtml2md) ───────────────────────────────────
 async function cmdConvertX(filePath, TurndownService) {
   let target;
   if (!filePath) {
@@ -1461,29 +1113,27 @@ async function cmdConvertX(filePath, TurndownService) {
   rl.close();
 }
 
-// ─── Command: DOCX → MD (docx2md) ──────────────────────────────────
+// ─── DOCX→MD ───────────────────────────────────────────────────────────
 async function cmdDocxToMd(argv) {
-  // Parse argumen
   let input = './Docs';
   let output = './Markdowns/fromdocx';
   let force = false;
   let noImages = false;
-  let nosplit = false; // <--- BARU
+  let nosplit = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--force' || arg === '-f') force = true;
     else if (arg === '--no-images') noImages = true;
-    else if (arg === '--nosplit' || arg === '-n') nosplit = true; // <--- BARU
+    else if (arg === '--nosplit' || arg === '-n') nosplit = true;
     else if (arg === '--output' && i + 1 < argv.length) {
       output = argv[i + 1];
-      i++; // skip next
+      i++;
     } else if (!arg.startsWith('--')) {
       input = arg;
     }
   }
 
-  // Cek mammoth
   let mammoth;
   try {
     mammoth = require('mammoth');
@@ -1494,10 +1144,8 @@ async function cmdDocxToMd(argv) {
     return;
   }
 
-  // Baca mapping dari config
   const mapping = readDocxMapping();
 
-  // Tentukan file .docx
   const inputPath = path.resolve(process.cwd(), input);
   let docxFiles = [];
   if (fs.existsSync(inputPath)) {
@@ -1533,7 +1181,6 @@ async function cmdDocxToMd(argv) {
     logI18n('docx_nosplit_mode', {}, 'info');
   }
 
-  // Proses setiap file
   const isMultiple = docxFiles.length > 1;
   for (const docxFile of docxFiles) {
     const baseName = path.basename(docxFile, '.docx');
@@ -1548,14 +1195,11 @@ async function cmdDocxToMd(argv) {
     logI18n('docx_processing', { file: path.basename(docxFile) }, 'info');
 
     try {
-      // Konversi ke HTML dengan mammoth
       const result = await mammoth.convertToHtml({ path: docxFile });
       let html = result.value;
 
-      // Perbaiki heading berdasarkan mapping
       const modifiedHtml = adjustHeadings(html, mapping);
 
-      // Konversi ke Markdown
       const TurndownService = require('turndown');
       const turndownService = new TurndownService({
         headingStyle: 'atx',
@@ -1566,15 +1210,12 @@ async function cmdDocxToMd(argv) {
       });
       let markdown = turndownService.turndown(modifiedHtml);
 
-      // Pecah berdasarkan ##
       const parts = markdown.split(/(?=^##\s+)/m).filter(p => p.trim() !== '');
       if (parts.length === 0) {
         parts.push(markdown);
       }
 
-      // --- TULIS FILE ---
       if (nosplit) {
-        // Gabungkan semua bagian menjadi satu file
         const combined = parts.join('\n\n');
         const mdPath = path.join(outDir, `${baseName}.md`);
         if (fs.existsSync(mdPath) && !force) {
@@ -1587,7 +1228,6 @@ async function cmdDocxToMd(argv) {
         fs.writeFileSync(mdPath, combined, 'utf8');
         logI18n('created', { file: mdPath }, 'success');
       } else {
-        // Perilaku lama: tulis p-*.md
         for (let i = 0; i < parts.length; i++) {
           const content = parts[i];
           const num = i + 1;
@@ -1616,9 +1256,8 @@ async function cmdDocxToMd(argv) {
   rl.close();
 }
 
-// ─── Command: split ────────────────────────────────────────────────────
+// ─── split ─────────────────────────────────────────────────────────────
 async function cmdSplit(argv) {
-  // Parse argumen
   let inputPath = null;
   let outputDir = './Markdowns/split';
   let force = false;
@@ -1680,12 +1319,10 @@ async function cmdSplit(argv) {
 
     try {
       const content = fs.readFileSync(mdFile, 'utf8');
-      // Pecah berdasarkan heading level 2 (##)
       const parts = content.split(/(?=^##\s+)/m).filter(p => p.trim() !== '');
       let outFiles = [];
 
       if (parts.length === 0) {
-        // Tidak ada heading level 2, simpan utuh
         logI18n('split_no_heading', { file: path.basename(mdFile) }, 'warn');
         const baseName = path.basename(mdFile, '.md');
         const dest = path.join(outDir, `${baseName}.md`);
@@ -1701,7 +1338,6 @@ async function cmdSplit(argv) {
         outFiles.push(dest);
         successCount++;
       } else {
-        // Tulis setiap bagian sebagai p-1.md, p-2.md, ...
         const baseName = path.basename(mdFile, '.md');
         for (let i = 0; i < parts.length; i++) {
           const part = parts[i];
@@ -1730,9 +1366,8 @@ async function cmdSplit(argv) {
   rl.close();
 }
 
-// ─── Command: merge ────────────────────────────────────────────────────
+// ─── merge ─────────────────────────────────────────────────────────────
 async function cmdMerge(argv) {
-  // Parse argumen
   let inputPath = null;
   let outputFile = './merged.md';
   let force = false;
@@ -1761,7 +1396,6 @@ async function cmdMerge(argv) {
     return;
   }
 
-  // Kumpulkan file .md
   let mdFiles = [];
   const stat = fs.statSync(target);
   if (stat.isFile()) {
@@ -1785,12 +1419,10 @@ async function cmdMerge(argv) {
     return;
   }
 
-  // Urutkan natural berdasarkan path
   mdFiles.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 
   logI18n('merge_processing', { count: mdFiles.length }, 'info');
 
-  // Tentukan output path
   const outPath = path.resolve(process.cwd(), outputFile);
   if (fs.existsSync(outPath) && !force) {
     const ans = await question(t('file_exists', { file: path.basename(outPath) }));
@@ -1801,11 +1433,10 @@ async function cmdMerge(argv) {
     }
   }
 
-  // Baca dan gabungkan konten
   let mergedContent = '';
   for (const file of mdFiles) {
     const content = fs.readFileSync(file, 'utf8');
-    if (mergedContent) mergedContent += '\n\n'; // pisahkan dengan dua newline
+    if (mergedContent) mergedContent += '\n\n';
     mergedContent += content;
   }
 
@@ -1816,7 +1447,7 @@ async function cmdMerge(argv) {
   rl.close();
 }
 
-// ─── Build core (tanpa interaksi) ─────────────────────────────────────
+// ─── Build core ────────────────────────────────────────────────────────
 async function buildEpub(archiver) {
   const cwd = process.cwd();
   const rootName = path.basename(cwd);
@@ -1949,13 +1580,12 @@ async function buildEpub(archiver) {
   });
 }
 
-// ─── Command: build (CLI) ─────────────────────────────────────────────
 async function cmdBuild(archiver) {
   await buildEpub(archiver);
   rl.close();
 }
 
-// ─── Command: debug (watch mode) ──────────────────────────────────────
+// ─── Debug ─────────────────────────────────────────────────────────────
 async function cmdDebug(archiver, marked) {
   const markdownsDir = path.join(process.cwd(), 'Markdowns');
   const epubDir = path.join(process.cwd(), 'EPUB');
@@ -1974,7 +1604,8 @@ async function cmdDebug(archiver, marked) {
   logI18n('debug_start', {}, 'info');
 
   let debounceTimer = null;
-  const debounceDelay = 500; // ms
+  const settings = loadSettings();
+  const debounceDelay = parseInt(settings.watch_delay) || 500;
 
   const onChange = () => {
     if (debounceTimer) clearTimeout(debounceTimer);
@@ -1982,9 +1613,7 @@ async function cmdDebug(archiver, marked) {
       debounceTimer = null;
       logI18n('debug_change', {}, 'info');
       try {
-        // Convert all .md files
-        await convertAllMd(markdownsDir, epubDir, true, marked);
-        // Build
+        const count = await convertAllMd(markdownsDir, epubDir, true, marked);
         await buildEpub(archiver);
         logI18n('debug_watching_again', {}, 'info');
       } catch (err) {
@@ -1993,7 +1622,6 @@ async function cmdDebug(archiver, marked) {
     }, debounceDelay);
   };
 
-  // Watch for changes
   let watcher;
   try {
     watcher = fs.watch(markdownsDir, { recursive: true }, (eventType, filename) => {
@@ -2001,7 +1629,6 @@ async function cmdDebug(archiver, marked) {
       onChange();
     });
   } catch (err) {
-    // Recursive not supported, fallback to watch root only
     logI18n('debug_watch_fallback', {}, 'warn');
     watcher = fs.watch(markdownsDir, (eventType, filename) => {
       if (filename && !filename.endsWith('.md')) return;
@@ -2009,14 +1636,12 @@ async function cmdDebug(archiver, marked) {
     });
   }
 
-  // Handle Ctrl+C
   const onExit = () => {
     if (watcher) watcher.close();
     rl.close();
     process.exit(0);
   };
   process.on('SIGINT', onExit);
-  // Keep the process alive
 }
 
 // ─── Parsing config ────────────────────────────────────────────────────
@@ -2161,7 +1786,6 @@ function getMimeType(filename) {
   return map[ext] || 'application/octet-stream';
 }
 
-// ─── generateOpf — FIXED ──────────────────────────────────────────────
 function generateOpf(config, chapters, media) {
   const { mainTitle, subTitle, volume, creator, language, identifier, date,
     publisher, description, subjects, seriesName, seriesNumber,
@@ -2178,16 +1802,12 @@ function generateOpf(config, chapters, media) {
     metadata.push(`<dc:title>${escapeXml(t)}</dc:title>`);
   }
 
-  // ─── HANYA SATU creator utama ──────────────────────────────────────
   if (creator) {
     metadata.push(`<dc:creator id="creator">${escapeXml(creator)}</dc:creator>`);
   }
 
-  // ─── Kontributor LAINNYA sebagai <dc:contributor> ──────────────────
-  // (termasuk role 'aut' jika creator utama sudah ada)
   for (const c of contributors) {
     const role = c.role || 'ctb';
-    // Jika role 'aut' dan kita TIDAK punya creator utama, maka jadikan creator
     if (role === 'aut' && !creator) {
       metadata.push(`<dc:creator id="creator">${escapeXml(c.name)}</dc:creator>`);
     } else {
@@ -2219,9 +1839,7 @@ function generateOpf(config, chapters, media) {
     }
   }
 
-  // ─── dcterms:modified dengan format tanpa milidetik ──────────────
   metadata.push(`<meta property="dcterms:modified">${getEpubTimestamp()}</meta>`);
-
   metadata.push(`<meta property="rendition:layout">reflowable</meta>`);
   metadata.push(`<meta property="schema:accessMode">textual</meta>`);
   metadata.push(`<meta property="schema:accessibilityFeature">tableOfContents</meta>`);
@@ -2287,7 +1905,6 @@ function generateOpf(config, chapters, media) {
   return opf;
 }
 
-// ─── generateToc — FIXED ──────────────────────────────────────────────
 function generateToc(chapters) {
   const items = chapters.map(ch =>
     `<li><a href="${escapeXml(ch.path)}">${escapeXml(ch.title)}</a></li>`
@@ -2356,7 +1973,6 @@ function generateContainer() {
 
 // ─── Command: import ───────────────────────────────────────────────────
 async function cmdImport(argv) {
-  // Parse argumen: --force, --output
   let force = false;
   let outputDir = process.cwd();
   for (let i = 0; i < argv.length; i++) {
@@ -2368,7 +1984,6 @@ async function cmdImport(argv) {
     }
   }
 
-  // Cek dependensi
   let AdmZip, xml2js;
   try {
     AdmZip = require('adm-zip');
@@ -2385,7 +2000,6 @@ async function cmdImport(argv) {
     return;
   }
 
-  // Cari file .epub di direktori saat ini
   const cwd = process.cwd();
   const files = fs.readdirSync(cwd).filter(f => f.endsWith('.epub'));
   if (files.length === 0) {
@@ -2411,11 +2025,9 @@ async function cmdImport(argv) {
   const epubPath = path.join(cwd, selectedFile);
   logI18n('import_extracting', { file: selectedFile }, 'info');
 
-  // Baca ZIP
   const zip = new AdmZip(epubPath);
   const zipEntries = zip.getEntries();
 
-  // Cari container.xml
   const containerEntry = zipEntries.find(e => e.entryName === 'META-INF/container.xml');
   if (!containerEntry) {
     console.error('❌ META-INF/container.xml tidak ditemukan dalam EPUB.');
@@ -2436,7 +2048,6 @@ async function cmdImport(argv) {
     return;
   }
 
-  // Baca OPF
   const opfEntry = zipEntries.find(e => e.entryName === opfPath);
   if (!opfEntry) {
     console.error(`❌ OPF tidak ditemukan: ${opfPath}`);
@@ -2453,7 +2064,6 @@ async function cmdImport(argv) {
     return;
   }
 
-  // Ekstrak metadata
   const metadata = opfParsed.package?.metadata?.[0] || {};
   const dc = metadata['dc:title'] || [];
   const titles = dc.map(t => t._ || t).filter(Boolean);
@@ -2489,7 +2099,6 @@ async function cmdImport(argv) {
     }
   }
 
-  // Ekstrak manifest
   const manifestItems = opfParsed.package?.manifest?.[0]?.item || [];
   const manifestMap = {};
   for (const item of manifestItems) {
@@ -2502,11 +2111,9 @@ async function cmdImport(argv) {
     }
   }
 
-  // Ekstrak spine
   const spineItems = opfParsed.package?.spine?.[0]?.itemref || [];
   const spineOrder = spineItems.map(item => item.$?.idref).filter(Boolean);
 
-  // Bangun direktori target
   const epubTarget = path.join(outputDir, 'EPUB');
   const imagesTarget = path.join(epubTarget, 'images');
   const audioTarget = path.join(epubTarget, 'audiovideo');
@@ -2514,7 +2121,6 @@ async function cmdImport(argv) {
   ensureDir(imagesTarget);
   ensureDir(audioTarget);
 
-  // Fungsi bantu untuk menyalin file dari zip
   function copyZipEntry(entryName, destPath, overwrite = false) {
     const entry = zipEntries.find(e => e.entryName === entryName);
     if (!entry) return false;
@@ -2525,7 +2131,6 @@ async function cmdImport(argv) {
     return true;
   }
 
-  // Salin cover
   let coverFound = false;
   for (const id in manifestMap) {
     const item = manifestMap[id];
@@ -2541,7 +2146,6 @@ async function cmdImport(argv) {
     }
   }
   if (!coverFound) {
-    // Fallback: cari file gambar dengan nama cover
     for (const id in manifestMap) {
       const item = manifestMap[id];
       if (item.mediaType && item.mediaType.startsWith('image/')) {
@@ -2558,7 +2162,6 @@ async function cmdImport(argv) {
     }
   }
 
-  // Salin bab dan media
   const chapterFiles = [];
   const imageFiles = [];
   const audioFiles = [];
@@ -2580,13 +2183,11 @@ async function cmdImport(argv) {
     }
   }
 
-  // Salin gambar (selain cover sudah diproses)
   for (const id in manifestMap) {
     const item = manifestMap[id];
     if (!item.mediaType) continue;
     if (item.mediaType.startsWith('image/')) {
       const filename = path.basename(item.href);
-      // Skip jika sudah cover
       if (coverFound && /cover/i.test(filename)) continue;
       const dest = path.join(imagesTarget, filename);
       if (copyZipEntry(item.href, dest, force)) {
@@ -2603,7 +2204,6 @@ async function cmdImport(argv) {
     }
   }
 
-  // Buat config.txt
   const configPath = path.join(outputDir, 'config.txt');
   let configContent = `# ============================================================
 #  METADATA BUKU  —  diedit dari hasil impor
@@ -2651,7 +2251,6 @@ extra_titles: ${extraTitles.join(', ')}
 #  Jalankan:  node epubcreator.js build
 # ============================================================
 `;
-  // Jika file config sudah ada dan tidak force, tanya
   if (fs.existsSync(configPath) && !force) {
     const ans = await question(t('file_exists', { file: 'config.txt' }));
     if (ans.toLowerCase() === 'y') {
@@ -2665,7 +2264,6 @@ extra_titles: ${extraTitles.join(', ')}
     logI18n('created', { file: configPath }, 'success');
   }
 
-  // Buat ord.txt
   const ordPath = path.join(outputDir, 'ord.txt');
   let ordContent = '# Daftar urutan bab (satu baris satu .xhtml)\n';
   ordContent += chapterFiles.join('\n');
@@ -2682,7 +2280,6 @@ extra_titles: ${extraTitles.join(', ')}
     logI18n('created', { file: ordPath }, 'success');
   }
 
-  // Ringkasan
   logI18n('import_done', {}, 'success');
   logI18n('import_summary', {
     chapters: chapterFiles.length,
@@ -2709,11 +2306,105 @@ async function cmdUpdateModule(force = false) {
   }
 
   try {
-    await downloadAndExtractModules();
+    const url = 'https://github.com/YogabyAllwaysever/epubcreator.js/archive/refs/heads/main.tar.gz';
+    await downloadAndExtract(url, process.cwd(), 'assets/node_modules', 2);
     logI18n('extract_success', {}, 'success');
   } catch (err) {
     logI18n('extract_failed', { error: err.message }, 'error');
   }
+  rl.close();
+}
+
+// ─── Command: updateconfig ─────────────────────────────────────────────
+async function cmdUpdateConfig(force = false) {
+  const configDir = path.join(process.cwd(), TOOL_DIR);
+  if (fs.existsSync(configDir) && !force) {
+    const ans = await question(t('updateconfig_confirm'));
+    if (ans.toLowerCase() !== 'y') {
+      logI18n('cancelled', {}, 'warn');
+      rl.close();
+      return;
+    }
+  } else if (fs.existsSync(configDir) && force) {
+    logI18n('updateconfig_force', {}, 'info');
+  }
+
+  try {
+    const url = 'https://github.com/YogabyAllwaysever/epubcreator.js/archive/refs/heads/config.tar.gz';
+    await downloadAndExtract(url, process.cwd(), '.epubcreator', 1);
+    logI18n('updateconfig_success', {}, 'success');
+  } catch (err) {
+    logI18n('updateconfig_failed', { error: err.message }, 'error');
+  }
+  rl.close();
+}
+
+// ─── Command: settings ─────────────────────────────────────────────────
+async function cmdSettings() {
+  const settingsPath = path.join(process.cwd(), SETTINGS_FILE);
+  const settings = loadSettings();
+
+  // Tampilkan setting saat ini
+  console.log(t('settings_title'));
+  const keys = ['lang', 'watch_delay', 'auto_build', 'overwrite_policy'];
+  const current = {};
+  for (const k of keys) {
+    current[k] = settings[k] || '';
+    console.log(`${k.padEnd(15)} : ${current[k]}`);
+  }
+  console.log('\n' + t('settings_prompt'));
+
+  // Kumpulkan input
+  const newSettings = {};
+  for (const k of keys) {
+    const prompt = `[${k}] (${current[k]}): `;
+    const answer = await question(prompt);
+    if (answer.trim().toLowerCase() === 'save') {
+      // Simpan yang sudah diinput sebelumnya
+      for (const kk of keys) {
+        if (newSettings[kk] === undefined) {
+          newSettings[kk] = current[kk];
+        }
+      }
+      break;
+    }
+    if (answer.trim().toLowerCase() === 'cancel') {
+      logI18n('settings_cancelled', {}, 'warn');
+      rl.close();
+      return;
+    }
+    if (answer.trim() !== '') {
+      // Validasi sederhana
+      if (k === 'lang' && !['id', 'en'].includes(answer.trim())) {
+        logI18n('settings_invalid_value', {}, 'warn');
+        newSettings[k] = current[k];
+      } else if (k === 'watch_delay' && isNaN(parseInt(answer.trim()))) {
+        logI18n('settings_invalid_value', {}, 'warn');
+        newSettings[k] = current[k];
+      } else if (k === 'auto_build' && !['true', 'false'].includes(answer.trim().toLowerCase())) {
+        logI18n('settings_invalid_value', {}, 'warn');
+        newSettings[k] = current[k];
+      } else if (k === 'overwrite_policy' && !['ask', 'force', 'skip'].includes(answer.trim().toLowerCase())) {
+        logI18n('settings_invalid_value', {}, 'warn');
+        newSettings[k] = current[k];
+      } else {
+        newSettings[k] = answer.trim();
+      }
+    } else {
+      newSettings[k] = current[k];
+    }
+  }
+
+  // Tulis ke file
+  const content = Object.entries(newSettings).map(([k, v]) => `${k} = ${v}`).join('\n');
+  ensureDir(TOOL_DIR);
+  fs.writeFileSync(settingsPath, content, 'utf8');
+  logI18n('settings_saved', { file: settingsPath }, 'success');
+
+  // Reload bahasa
+  currentLang = newSettings.lang || 'en';
+  loadLanguageFile(currentLang);
+
   rl.close();
 }
 
@@ -2731,12 +2422,10 @@ async function cmdValidate() {
     rl.close();
     return;
   }
-  // Ambil file terbaru (urutkan berdasarkan nama)
   const latest = files.sort().pop();
   const epubPath = path.join(buildsDir, latest);
   logI18n('validate_start', { file: latest }, 'info');
 
-  // Coba jalankan epubcheck (harus terinstal di PATH)
   let output;
   try {
     output = execSync(`epubcheck "${epubPath}"`, { encoding: 'utf8' });
@@ -2750,24 +2439,13 @@ async function cmdValidate() {
 
 // ─── Main ──────────────────────────────────────────────────────────────
 async function main() {
-  // 1. Load/Setup bahasa (interaktif jika belum ada)
-  currentLang = await loadOrAskLanguage();
+  // Load settings dan bahasa
+  const settings = loadSettings();
+  currentLang = settings.lang || 'en';
+  loadLanguageFile(currentLang);
 
-  // 2. Ambil perintah
   const args = process.argv.slice(2);
   const command = args[0];
-
-  // ─── Perintah tanpa perlu dependensi ──────────────────────────────
-  // Bahasa
-  if (command === 'lang-id' || command === 'lang-en') {
-    const lang = command === 'lang-id' ? 'id' : 'en';
-    const configPath = path.join(process.cwd(), CONFIG_FILE);
-    fs.writeFileSync(configPath, `language=${lang}`, 'utf8');
-    const langName = lang === 'id' ? 'Indonesia' : 'English';
-    console.log(t('lang_changed', { lang: langName }));
-    rl.close();
-    return;
-  }
 
   // Versi / Help
   if (command === '--version' || command === '-v') {
@@ -2784,26 +2462,27 @@ async function main() {
     return;
   }
 
-  // Perintah yang tidak butuh modul tambahan (whitelist)
+  // Perintah tanpa dependensi
+  if (command === 'createdir') {
+    await cmdCreateDir();
+    return;
+  }
   if (command === 'updatemodule') {
     const force = args.includes('--force') || args.includes('-f');
     await cmdUpdateModule(force);
+    return;
+  }
+  if (command === 'updateconfig') {
+    const force = args.includes('--force') || args.includes('-f');
+    await cmdUpdateConfig(force);
     return;
   }
   if (command === 'import') {
     await cmdImport(args.slice(1));
     return;
   }
-  if (command === 'createdir') {
-    await cmdCreateDir();
-    return;
-  }
-  if (command === 'createconfig') {
-    await cmdCreateConfig();
-    return;
-  }
-  if (command === 'createchapter') {
-    await cmdCreateChapter();
+  if (command === 'settings') {
+    await cmdSettings();
     return;
   }
   if (command === 'validate') {
@@ -2811,7 +2490,7 @@ async function main() {
     return;
   }
 
-  // ─── Perintah yang memerlukan dependensi ──────────────────────────
+  // Perintah dengan dependensi
   let deps;
   try {
     deps = checkDependencies();
@@ -2820,7 +2499,7 @@ async function main() {
   }
   const { archiver, marked, TurndownService } = deps;
 
-  // Handle convertch / conv
+  // convertch / conv
   if (command === 'convertch' || command === 'conv') {
     const sub = args[1] || 'md2xhtml';
     const rest = args.slice(2);
@@ -2840,37 +2519,31 @@ async function main() {
     return;
   }
 
-  // convertchx (alias)
   if (command === 'convertchx') {
     await cmdConvertX(args[1], TurndownService);
     return;
   }
 
-  // split
   if (command === 'split') {
     await cmdSplit(args.slice(1));
     return;
   }
 
-  // merge
   if (command === 'merge') {
     await cmdMerge(args.slice(1));
     return;
   }
 
-  // build
   if (command === 'build') {
     await cmdBuild(archiver);
     return;
   }
 
-  // debug
   if (command === 'debug') {
     await cmdDebug(archiver, marked);
     return;
   }
 
-  // Perintah tidak dikenal
   logI18n('unknown_command', { cmd: command }, 'error');
   logI18n('usage_hint', {}, 'info');
   rl.close();
