@@ -2,3 +2,4 @@ lang = en
 watch_delay = 500
 auto_build = false
 overwrite_policy = ask
+default_type = textbook
