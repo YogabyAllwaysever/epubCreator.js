@@ -2,7 +2,7 @@
 /**
  * epubcreator.js — Node CLI untuk kompilasi direktori ke EPUB
  *
- * Versi: 3.1.0-BETA (dukungan comic / manga / textbook)
+ * Versi: 3.1.1-BETA (dukungan comic / manga / textbook + CSS custom)
  *
  *  Copyright (C) 2026 YogabyAllwaysever.
  *
@@ -13,7 +13,8 @@
  *   node epubcreator.js createdir manga            → paksa mode manga (RTL)
  *   node epubcreator.js convertch                  → ubah file .md menjadi .xhtml (default)
  *   node epubcreator.js convertch img2xhtml        → generate .xhtml dari gambar (mode comic/manga)
- *   node epubcreator.js convertch img2xhtml --regen-ord → generate + overwrite ord.txt
+ *   node epubcreator.js convertch img2xhtml --fit=cover     → generate + override fit mode
+ *   node epubcreator.js convertch img2xhtml --regen-ord     → generate + overwrite ord.txt
  *   node epubcreator.js convertch xhtml2md         → ubah file .xhtml menjadi .md
  *   node epubcreator.js convertch docx2md          → ubah file .docx menjadi .md (pecah berdasarkan ##)
  *   node epubcreator.js conv ...                   → alias untuk convertch
@@ -37,9 +38,14 @@
  *       !  = force single spread
  *   - Jika ada, urutan mengikuti daftar tersebut
  *   - Jika tidak ada, urutkan otomatis berdasarkan nama file (natural sort)
+ *
+ * Fitur CSS (comic/manga):
+ *   - Auto-detect semua .css di EPUB/styles/
+ *   - Atau set "custom_css: styles/a.css, styles/b.css" di config.txt
+ *   - Setiap XHTML akan otomatis di-link ke CSS tersebut
  */
 
-const VERSION = '3.1.0-BETA';
+const VERSION = '3.1.1-BETA';
 
 const fs = require('fs');
 const path = require('path');
@@ -161,6 +167,7 @@ const FALLBACK_MESSAGES = {
   comic_pages_dir_missing: 'EPUB/images/pages/ not found. Put page images there first.',
   comic_xhtmls_missing: 'EPUB/xhtmls/ not found. Run "convertch img2xhtml" first.',
   comic_syncing: '🔄 Syncing XHTML from images...',
+  comic_css_found: '🎨 Custom CSS: {list}',
 
   // import
   import_no_epub: 'No .epub file found in this directory.',
@@ -232,6 +239,7 @@ const FALLBACK_MESSAGES = {
   createdir_invalid_direction: '⚠️  Invalid direction "{dir}". Using default.',
   createdir_cover_hint: '⚠️  Taruh cover di EPUB/images/cover.jpg',
   createdir_pages_hint: '⚠️  Taruh halaman komik di EPUB/images/pages/',
+  createdir_styles_hint: '⚠️  (Opsional) Taruh CSS custom di EPUB/styles/',
 
   // command unknown
   unknown_command: 'Unknown command: {cmd}',
@@ -293,6 +301,8 @@ Directory structure (comic/manga):
   │   │   │   └── 0002.xhtml
   │   │   └── ch2/
   │   │       └── 0001.xhtml
+  │   ├── styles/         ← optional custom CSS
+  │   │   └── comic.css
   │   ├── about.xhtml     ← back-matter (reflowable) optional
   │   └── audiovideo/     ← optional
   └── builds/
@@ -514,6 +524,10 @@ function isImageFile(filePath) {
   return /\.(png|jpe?g|gif|webp|svg)$/i.test(filePath);
 }
 
+function isCssFile(filePath) {
+  return /\.css$/i.test(filePath);
+}
+
 function naturalSort(arr) {
   return arr.slice().sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }));
 }
@@ -557,7 +571,6 @@ function getImageSize(filePath) {
     if (buf.slice(0, 4).toString() === 'RIFF' && buf.slice(8, 12).toString() === 'WEBP') {
       const chunk = buf.slice(12, 16).toString();
       if (chunk === 'VP8 ') {
-        // Lossy: dimensions at offset 26 (14-bit each)
         const w = buf.readUInt16LE(26) & 0x3FFF;
         const h = buf.readUInt16LE(28) & 0x3FFF;
         return { width: w, height: h };
@@ -573,6 +586,20 @@ function getImageSize(filePath) {
         return { width: w, height: h };
       }
     }
+  } catch (_) { /* ignore */ }
+  return null;
+}
+
+// ─── SVG dimension detector (fallback) ─────────────────────────────────
+function getSvgSize(filePath) {
+  try {
+    const svg = fs.readFileSync(filePath, 'utf8');
+    const vb = svg.match(/viewBox=["']\s*[\d.-]+\s+[\d.-]+\s+([\d.]+)\s+([\d.]+)/i);
+    const wAttr = svg.match(/\bwidth=["'](\d+(?:\.\d+)?)/i);
+    const hAttr = svg.match(/\bheight=["'](\d+(?:\.\d+)?)/i);
+    const w = wAttr ? parseFloat(wAttr[1]) : (vb ? parseFloat(vb[1]) : 0);
+    const h = hAttr ? parseFloat(hAttr[1]) : (vb ? parseFloat(vb[2]) : 0);
+    if (w > 0 && h > 0) return { width: w, height: h };
   } catch (_) { /* ignore */ }
   return null;
 }
@@ -609,12 +636,48 @@ function readChapterTitleOverride(folderPath) {
 
 // ─── EPUB-internal path helpers ────────────────────────────────────────
 function epubPathToPosix(p) {
-  return p.split(path.sep).join('/');
+  return String(p).split(path.sep).join('/');
 }
 
 function epubRelative(fromEpubFile, toEpubFile) {
   const fromDir = path.posix.dirname(epubPathToPosix(fromEpubFile));
   return path.posix.relative(fromDir, epubPathToPosix(toEpubFile));
+}
+
+// ─── CSS helpers ───────────────────────────────────────────────────────
+function collectCssFiles(epubDir, config) {
+  // Prioritas: config.custom_css → fallback auto-detect EPUB/styles/*.css
+  const result = [];
+  if (config && config.custom_css) {
+    const list = config.custom_css.split(',').map(s => s.trim()).filter(Boolean);
+    for (const rel of list) {
+      const stripped = rel.replace(/^EPUB[\\/]/, '');
+      const full = path.join(epubDir, stripped);
+      if (fs.existsSync(full) && full.toLowerCase().endsWith('.css')) {
+        result.push(epubPathToPosix(path.relative(epubDir, full)));
+      }
+    }
+  }
+  if (result.length === 0) {
+    const stylesDir = path.join(epubDir, 'styles');
+    if (fs.existsSync(stylesDir)) {
+      const files = walkFilesRecursive(stylesDir, isCssFile);
+      for (const f of naturalSort(files)) {
+        result.push(epubPathToPosix(path.relative(epubDir, f)));
+      }
+    }
+  }
+  return result;
+}
+
+function buildCssLinks(fromXhtmlEpubPath, cssRelPaths) {
+  // fromXhtmlEpubPath: e.g. "xhtmls/ch1/0001.xhtml" atau "cover.xhtml"
+  if (!cssRelPaths || cssRelPaths.length === 0) return '';
+  const fromDir = path.posix.dirname(epubPathToPosix(fromXhtmlEpubPath));
+  return cssRelPaths.map(css => {
+    const rel = path.posix.relative(fromDir, css);
+    return `<link rel="stylesheet" type="text/css" href="${escapeXml(rel)}" />`;
+  }).join('\n  ');
 }
 
 // ─── ord.txt parsing/writing ───────────────────────────────────────────
@@ -665,7 +728,9 @@ function writeOrdFile(ordPath, entries, comicMode = false) {
     let prefix = '';
     if (comicMode && e.spread === 'center') prefix = '*';
     else if (comicMode && e.spread === 'single') prefix = '!';
-    let line = `${prefix}${e.path}`;
+    // FIX: normalize path ke posix supaya konsisten antar OS
+    const normPath = epubPathToPosix(String(e.path || ''));
+    let line = `${prefix}${normPath}`;
     if (comicMode && e.alt) line += ` | ${e.alt}`;
     lines.push(line);
   }
@@ -673,7 +738,7 @@ function writeOrdFile(ordPath, entries, comicMode = false) {
 }
 
 // ─── Generate XHTML from image ─────────────────────────────────────────
-function generatePageXhtml(imgHref, altText, w, h, fitMode = 'contain') {
+function generatePageXhtml(imgHref, altText, w, h, fitMode = 'contain', cssLinks = '') {
   const viewport = (w && h) ? `width=${w}, height=${h}` : 'width=device-width, initial-scale=1';
   const fitCSS = {
     contain: 'width:100%;height:100%;object-fit:contain;',
@@ -690,14 +755,16 @@ function generatePageXhtml(imgHref, altText, w, h, fitMode = 'contain') {
   <meta charset="UTF-8" />
   <title>Page</title>
   <meta name="viewport" content="${viewport}" />
+  <meta name="epubcreator:fit_mode" content="${escapeXml(fitMode)}" />
+  ${cssLinks}
   <style>
     html, body { margin:0; padding:0; height:100%; background:#000; }
-    .page { display:flex; align-items:center; justify-content:center; height:100%; }
-    img { ${fitCSS} }
+    .epc-page { display:flex; align-items:center; justify-content:center; height:100%; }
+    .epc-img { ${fitCSS} }
   </style>
 </head>
-<body>
-  <div class="page"><img src="${escapeXml(imgHref)}" alt="${escapeXml(altText || '')}" /></div>
+<body class="epc-body">
+  <div class="epc-page"><img class="epc-img" src="${escapeXml(imgHref)}" alt="${escapeXml(altText || '')}" /></div>
 </body>
 </html>
 `;
@@ -708,13 +775,14 @@ async function syncXhtmlFromImages(epubDir, opts = {}) {
   const silent = opts.silent === true;
   const force = opts.force === true;
   const fitMode = opts.fitMode || 'contain';
+  const cssRelPaths = opts.cssRelPaths || [];
 
   const pagesDir = path.join(epubDir, 'images', 'pages');
   const xhtmlsDir = path.join(epubDir, 'xhtmls');
 
   if (!fs.existsSync(pagesDir)) {
     if (!silent) logI18n('img2x_pages_not_found', {}, 'error');
-    return { generated: 0, skipped: 0, total: 0 };
+    return { generated: 0, skipped: 0, total: 0, generatedPaths: [] };
   }
 
   ensureDir(xhtmlsDir);
@@ -722,7 +790,7 @@ async function syncXhtmlFromImages(epubDir, opts = {}) {
   const images = walkFilesRecursive(pagesDir, isImageFile);
   if (images.length === 0) {
     if (!silent) logI18n('img2x_no_images', {}, 'warn');
-    return { generated: 0, skipped: 0, total: 0 };
+    return { generated: 0, skipped: 0, total: 0, generatedPaths: [] };
   }
 
   if (!silent) logI18n('img2x_images_found', { count: images.length }, 'info');
@@ -730,6 +798,7 @@ async function syncXhtmlFromImages(epubDir, opts = {}) {
   let generated = 0;
   let skipped = 0;
   const generatedPaths = [];
+  const hasCss = cssRelPaths.length > 0;
 
   for (const imgPath of images) {
     const relToPages = path.relative(pagesDir, imgPath);
@@ -737,32 +806,48 @@ async function syncXhtmlFromImages(epubDir, opts = {}) {
     const xhtmlPath = path.join(xhtmlsDir, relXhtml);
     ensureDir(path.dirname(xhtmlPath));
 
-    // Determine if we need to regenerate: xhtml missing, or image newer
+    // FIX: hitung path gambar relatif ke FOLDER XHTML, bukan ke xhtmls/
+    const xhtmlDirPath = path.dirname(xhtmlPath);
+    const imgRelToXhtml = path.relative(xhtmlDirPath, imgPath);
+    const imgHref = epubPathToPosix(imgRelToXhtml);
+
+    // Path XHTML relatif EPUB untuk hitung CSS link
+    const xhtmlRelEpub = epubPathToPosix(path.relative(epubDir, xhtmlPath));
+    const cssLinks = buildCssLinks(xhtmlRelEpub, cssRelPaths);
+
+    // Deteksi apakah perlu regenerate
     let needGen = true;
     if (fs.existsSync(xhtmlPath) && !force) {
       try {
         const imgStat = fs.statSync(imgPath);
         const xhtmlStat = fs.statSync(xhtmlPath);
         if (xhtmlStat.mtimeMs >= imgStat.mtimeMs) {
-          needGen = false;
+          const content = fs.readFileSync(xhtmlPath, 'utf8');
+          const fitMatch = content.match(/<meta\s+name="epubcreator:fit_mode"\s+content="([^"]*)"/i);
+          const existingFit = fitMatch ? fitMatch[1] : null;
+          const fitChanged = existingFit !== fitMode;
+          // Kalau ada CSS, cek apakah XHTML lama sudah punya link .css
+          const contentHasCss = /\.css["']/.test(content);
+          const cssChanged = hasCss && !contentHasCss;
+          if (!fitChanged && !cssChanged) {
+            needGen = false;
+          }
         }
       } catch (_) { needGen = true; }
     }
 
     if (!needGen) {
       skipped++;
-      generatedPaths.push(relXhtml);
+      generatedPaths.push(epubPathToPosix(relXhtml));
+      if (!silent) logI18n('img2x_skipped', { file: xhtmlPath }, 'info');
       continue;
     }
 
     const size = getImageSize(imgPath) || { width: 1200, height: 1600 };
-    const imgRelToXhtmls = path.relative(xhtmlsDir, imgPath);
-    const imgHref = epubPathToPosix(imgRelToXhtmls);
-
-    const xhtml = generatePageXhtml(imgHref, '', size.width, size.height, fitMode);
+    const xhtml = generatePageXhtml(imgHref, '', size.width, size.height, fitMode, cssLinks);
     fs.writeFileSync(xhtmlPath, xhtml, 'utf8');
     generated++;
-    generatedPaths.push(relXhtml);
+    generatedPaths.push(epubPathToPosix(relXhtml));
 
     if (!silent) logI18n('img2x_generated', { file: xhtmlPath }, 'success');
   }
@@ -777,6 +862,13 @@ function getChapterKey(relXhtmlPath) {
   return parts[0];
 }
 
+// ─── Helper: safe parse config (return null kalau gagal) ───────────────
+function safeParseConfig() {
+  const p = path.join(process.cwd(), 'config.txt');
+  if (!fs.existsSync(p)) return null;
+  try { return parseConfig(p); } catch (_) { return null; }
+}
+
 // ─── Command: convertch img2xhtml ──────────────────────────────────────
 async function cmdImg2Xhtml(argv) {
   const epubDir = path.join(process.cwd(), 'EPUB');
@@ -789,7 +881,25 @@ async function cmdImg2Xhtml(argv) {
   const force = argv.includes('--force') || argv.includes('-f');
   const regenOrd = argv.includes('--regen-ord');
 
-  const result = await syncXhtmlFromImages(epubDir, { silent: false, force });
+  // Parse --fit=xxx
+  let fitMode = null;
+  const fitArg = argv.find(a => a.startsWith('--fit='));
+  if (fitArg) {
+    const v = fitArg.slice(6).toLowerCase();
+    if (['contain', 'cover', 'width', 'height', 'none'].includes(v)) fitMode = v;
+  }
+  if (!fitMode) {
+    // Baca dari config.txt
+    const cfg = safeParseConfig();
+    if (cfg && cfg.fit_mode) fitMode = cfg.fit_mode.toLowerCase();
+  }
+  if (!fitMode) fitMode = 'contain';
+
+  // Collect CSS
+  const cfg = safeParseConfig();
+  const cssRelPaths = collectCssFiles(epubDir, cfg);
+
+  const result = await syncXhtmlFromImages(epubDir, { silent: false, force, fitMode, cssRelPaths });
 
   // Handle ord.txt
   const ordPath = path.join(process.cwd(), 'ord.txt');
@@ -903,6 +1013,10 @@ function collectBackMatter(epubDir) {
       let title = path.basename(item, '.xhtml');
       try {
         const content = fs.readFileSync(fullPath, 'utf8');
+        // FIX: skip kalau ini halaman nav/toc (bukan back-matter sebenarnya)
+        if (/<nav\b[^>]*epub:type=["']toc["']/i.test(content)) continue;
+        if (/epub:type=["']toc["']/i.test(content) && !/<img\b/i.test(content)) continue;
+        if (/<nav\b/i.test(content) && !/<img\b/i.test(content)) continue;
         const m = content.match(/<title[^>]*>([^<]*)<\/title>/i);
         if (m) title = m[1].trim();
       } catch (_) { /* ignore */ }
@@ -916,13 +1030,14 @@ function collectBackMatter(epubDir) {
 function detectDoubleSpread(epubDir, relPagePath) {
   // relPagePath = 'ch1/0001.xhtml' relative to xhtmls/
   const imgDir = path.join(epubDir, 'images', 'pages');
-  // Mirror to image
-  const ext = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+  const ext = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg'];
   const baseRel = relPagePath.replace(/\.xhtml$/i, '');
   for (const e of ext) {
     const imgPath = path.join(imgDir, baseRel + e);
     if (fs.existsSync(imgPath)) {
-      const size = getImageSize(imgPath);
+      let size = getImageSize(imgPath);
+      // FIX: SVG tidak dibaca oleh getImageSize, pakai fallback
+      if (!size && e === '.svg') size = getSvgSize(imgPath);
       if (size && size.height > 0) {
         const ratio = size.width / size.height;
         if (ratio > 1.4) return { double: true, ratio };
@@ -1292,6 +1407,7 @@ async function createComicStructure(type) {
   const imagesDir = path.join(epubDir, 'images');
   const pagesDir = path.join(imagesDir, 'pages');
   const xhtmlsDir = path.join(epubDir, 'xhtmls');
+  const stylesDir = path.join(epubDir, 'styles');
   const audioDir = path.join(epubDir, 'audiovideo');
   const configPath = path.join(cwd, 'config.txt');
   const ordPath = path.join(cwd, 'ord.txt');
@@ -1300,6 +1416,7 @@ async function createComicStructure(type) {
   ensureDir(imagesDir);
   ensureDir(pagesDir);
   ensureDir(xhtmlsDir);
+  ensureDir(stylesDir);
   ensureDir(audioDir);
 
   // Ask: chapters?
@@ -1371,6 +1488,7 @@ async function createComicStructure(type) {
   console.log('');
   log(t('createdir_cover_hint'), 'warn');
   log(t('createdir_pages_hint'), 'warn');
+  log(t('createdir_styles_hint'), 'info');
 }
 
 function buildTextbookConfigTemplate() {
@@ -1469,6 +1587,11 @@ spread: auto
 # Fit mode gambar halaman: contain | cover | width | height | none
 fit_mode: contain
 
+# CSS custom (opsional). Kosongkan untuk auto-detect dari EPUB/styles/
+# Format: comma-separated path relatif dari EPUB/
+# Contoh: styles/comic.css, styles/theme-dark.css
+custom_css: 
+
 # Judul utama (wajib)
 title: Judul Komik
 
@@ -1527,6 +1650,8 @@ extra_titles:
 #       │       └── ch2/
 #       │           └── 0001.jpg
 #       ├── xhtmls/         ← auto-generate via "convertch img2xhtml"
+#       ├── styles/         ← opsional custom CSS
+#       │   └── comic.css
 #       └── about.xhtml     ← back-matter (opsional, reflowable)
 #
 #  Alur:
@@ -2305,9 +2430,14 @@ async function buildComicEpub(archiver, config, epubDir, type) {
 
   logI18n('comic_mode', { type, direction, spread }, 'info');
 
-  // Auto-sync XHTML (silent)
+  // Collect CSS + auto-sync XHTML
+  const cssRelPaths = collectCssFiles(epubDir, config);
+  if (cssRelPaths.length > 0) {
+    logI18n('comic_css_found', { list: cssRelPaths.join(', ') }, 'info');
+  }
+
   logI18n('comic_syncing', {}, 'info');
-  await syncXhtmlFromImages(epubDir, { silent: true, force: false, fitMode });
+  await syncXhtmlFromImages(epubDir, { silent: true, force: false, fitMode, cssRelPaths });
 
   // Collect pages
   const pages = collectComicPages(epubDir, ordPath);
@@ -2329,40 +2459,48 @@ async function buildComicEpub(archiver, config, epubDir, type) {
   // Back-matter
   const backMatter = collectBackMatter(epubDir);
 
-  // Determine spread for each page
+  // FIX: pakai toggle sisi baca, reset setelah center spread
   const chapters = [];
+  let currentSide = (direction === 'rtl') ? 'right' : 'left';
   for (let i = 0; i < pages.length; i++) {
     const p = pages[i];
     let spreadProp = null;
+    let isCenter = false;
 
     if (p.spread === 'center') {
       spreadProp = 'page-spread-center';
+      isCenter = true;
     } else if (p.spread === 'single') {
-      // alternate based on index
-      spreadProp = (i % 2 === 0)
-        ? (direction === 'rtl' ? 'page-spread-right' : 'page-spread-left')
-        : (direction === 'rtl' ? 'page-spread-left'  : 'page-spread-right');
+      spreadProp = currentSide === 'left' ? 'page-spread-left' : 'page-spread-right';
     } else {
-      // auto-detect
       const det = detectDoubleSpread(epubDir, p.relPath);
       if (det.double) {
         logI18n('comic_double_detected', { page: i + 1, ratio: det.ratio.toFixed(2) }, 'info');
         spreadProp = 'page-spread-center';
+        isCenter = true;
       } else {
-        spreadProp = (i % 2 === 0)
-          ? (direction === 'rtl' ? 'page-spread-right' : 'page-spread-left')
-          : (direction === 'rtl' ? 'page-spread-left'  : 'page-spread-right');
+        spreadProp = currentSide === 'left' ? 'page-spread-left' : 'page-spread-right';
       }
     }
 
-    // Determine title: alt > <title> > "Page N"
+    // Toggle sisi untuk halaman single berikutnya
+    if (isCenter) {
+      // reset: setelah double-spread, halaman berikutnya dianggap start lagi
+      currentSide = (direction === 'rtl') ? 'right' : 'left';
+    } else {
+      currentSide = currentSide === 'left' ? 'right' : 'left';
+    }
+
+    // FIX: title fallback — kalau <title> cuma "Page" (generic), pakai "Page N"
     let title = p.alt;
     if (!title) {
       const xhtmlPath = path.join(epubDir, 'xhtmls', p.relPath);
       try {
         const content = fs.readFileSync(xhtmlPath, 'utf8');
         const m = content.match(/<title[^>]*>([^<]*)<\/title>/i);
-        if (m && m[1].trim()) title = m[1].trim();
+        if (m && m[1].trim() && m[1].trim().toLowerCase() !== 'page') {
+          title = m[1].trim();
+        }
       } catch (_) { /* ignore */ }
     }
     if (!title) title = `Page ${i + 1}`;
@@ -2407,14 +2545,14 @@ async function buildComicEpub(archiver, config, epubDir, type) {
     },
     chapters,
     media,
-    { type, readingDirection: direction, spread, backMatter }
+    { type, readingDirection: direction, spread, backMatter, cssRelPaths }
   );
 
   const tocContent = generateToc(chapters, {
     comic: true,
     chapterTitles: buildChapterTitleMap(epubDir, chapters),
   });
-  const coverContent = generateCoverXhtml(media.cover, coverSize, { comic: true });
+  const coverContent = generateCoverXhtml(media.cover, coverSize, { comic: true, cssRelPaths });
   const containerContent = generateContainer();
 
   const output = fs.createWriteStream(epubPath);
@@ -2459,6 +2597,16 @@ async function buildComicEpub(archiver, config, epubDir, type) {
       }
     }
 
+    // Add styles/ (CSS custom)
+    const stylesDir = path.join(epubDir, 'styles');
+    if (fs.existsSync(stylesDir)) {
+      const cssFiles = walkFilesRecursive(stylesDir, isCssFile);
+      for (const cf of cssFiles) {
+        const rel = path.relative(epubDir, cf);
+        archive.file(cf, { name: `EPUB/${epubPathToPosix(rel)}` });
+      }
+    }
+
     // Add audiovideo/
     const audioDir = path.join(epubDir, 'audiovideo');
     if (fs.existsSync(audioDir)) {
@@ -2469,8 +2617,8 @@ async function buildComicEpub(archiver, config, epubDir, type) {
       }
     }
 
-    // Add back-matter XHTML
-    const excludeRoot = ['cover.xhtml', 'toc.xhtml', 'volume.opf'];
+    // Add back-matter XHTML (exclude nav/toc/cover yang sudah punya versi generated)
+    const excludeRoot = ['cover.xhtml', 'toc.xhtml', 'nav.xhtml', 'volume.opf'];
     const allEpubFiles = fs.readdirSync(epubDir);
     for (const item of allEpubFiles) {
       if (excludeRoot.includes(item.toLowerCase())) continue;
@@ -2587,13 +2735,17 @@ async function cmdDebugComic(archiver, type) {
   const settings = loadSettings();
   const debounceDelay = parseInt(settings.watch_delay) || 500;
 
+  const cfg = safeParseConfig();
+  const fitMode = (cfg && cfg.fit_mode) ? cfg.fit_mode.toLowerCase() : 'contain';
+  const cssRelPaths = collectCssFiles(epubDir, cfg);
+
   const onChange = () => {
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(async () => {
       debounceTimer = null;
       logI18n('debug_change', {}, 'info');
       try {
-        await syncXhtmlFromImages(epubDir, { silent: true, force: false });
+        await syncXhtmlFromImages(epubDir, { silent: true, force: false, fitMode, cssRelPaths });
         await buildEpub(archiver);
         logI18n('debug_watching_again', {}, 'info');
       } catch (err) {
@@ -2808,6 +2960,7 @@ function getMimeType(filename) {
     '.xhtml': 'application/xhtml+xml',
     '.html': 'application/xhtml+xml',
     '.xml': 'application/xml',
+    '.css': 'text/css',
   };
   return map[ext] || 'application/octet-stream';
 }
@@ -2822,6 +2975,7 @@ function generateOpf(config, chapters, media, options) {
   const direction = options.readingDirection || (isComic ? defaultDirectionFor(options.type) : 'ltr');
   const spread = options.spread || (isComic ? 'auto' : 'none');
   const backMatter = options.backMatter || [];
+  const cssRelPaths = options.cssRelPaths || [];
 
   const metadata = [];
   const titles = [mainTitle || 'Untitled'];
@@ -2897,11 +3051,7 @@ function generateOpf(config, chapters, media, options) {
   // Cover image
   let coverImgRel = null;
   if (media.cover) {
-    if (isComic) {
-      coverImgRel = `images/${media.cover}`;
-    } else {
-      coverImgRel = `images/${media.cover}`;
-    }
+    coverImgRel = `images/${media.cover}`;
     const mime = getMimeType(media.cover);
     manifest.push(`<item id="cover-image" href="${escapeXml(coverImgRel)}" media-type="${mime}" properties="cover-image"/>`);
   } else {
@@ -2937,38 +3087,50 @@ function generateOpf(config, chapters, media, options) {
   if (isComic) {
     for (let i = 0; i < backMatter.length; i++) {
       const bm = backMatter[i];
+      // FIX: skip nav/toc yang kadang masih lolos di backMatter
+      const bmBase = path.basename(bm.path).toLowerCase();
+      if (['nav.xhtml', 'toc.xhtml', 'cover.xhtml'].includes(bmBase)) continue;
       const id = `back_${i}`;
       manifest.push(`<item id="${id}" href="${escapeXml(bm.path)}" media-type="application/xhtml+xml" properties="rendition:layout-reflowable"/>`);
       spine.push(`<itemref idref="${id}" linear="yes"/>`);
     }
   }
 
+  // CSS files
+  for (let i = 0; i < cssRelPaths.length; i++) {
+    const cssRel = cssRelPaths[i];
+    manifest.push(`<item id="css_${i}" href="${escapeXml(cssRel)}" media-type="text/css"/>`);
+  }
+
   // Images (illustrations for textbook, illustrations + pages for comic)
   if (isComic) {
     // illustrations (images/* non-pages non-cover)
-    for (const img of media.illustrations) {
-      const id = `img_${String(img).replace(/[^a-zA-Z0-9]/g, '_')}`;
+    for (let i = 0; i < media.illustrations.length; i++) {
+      const img = media.illustrations[i];
+      const id = `img_${i}_${String(img).replace(/[^a-zA-Z0-9]/g, '_')}`;
       const href = `images/${img}`;
       manifest.push(`<item id="${id}" href="${escapeXml(href)}" media-type="${getMimeType(img)}"/>`);
     }
-    // pages (images/pages/**/*)
-    for (const relImg of media.pages) {
-      const norm = epubPathToPosix(relImg);
-      const id = `pimg_${norm.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    // pages (images/pages/**/*) — FIX: pakai index unik biar gak collision
+    for (let i = 0; i < media.pages.length; i++) {
+      const norm = epubPathToPosix(media.pages[i]);
+      const id = `pimg_${i}_${norm.replace(/[^a-zA-Z0-9]/g, '_')}`;
       manifest.push(`<item id="${id}" href="${escapeXml(norm)}" media-type="${getMimeType(norm)}"/>`);
     }
   } else {
-    for (const img of media.images) {
+    for (let i = 0; i < media.images.length; i++) {
+      const img = media.images[i];
       if (img === media.cover) continue;
-      const id = `img_${img.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      const id = `img_${i}_${img.replace(/[^a-zA-Z0-9]/g, '_')}`;
       const href = `images/${img}`;
       manifest.push(`<item id="${id}" href="${escapeXml(href)}" media-type="${getMimeType(img)}"/>`);
     }
   }
 
   // Audio/video
-  for (const av of media.audio) {
-    const id = `av_${String(av).replace(/[^a-zA-Z0-9]/g, '_')}`;
+  for (let i = 0; i < media.audio.length; i++) {
+    const av = media.audio[i];
+    const id = `av_${i}_${String(av).replace(/[^a-zA-Z0-9]/g, '_')}`;
     const href = `audiovideo/${av}`;
     manifest.push(`<item id="${id}" href="${escapeXml(href)}" media-type="${getMimeType(av)}"/>`);
   }
@@ -3091,6 +3253,8 @@ function generateToc(chapters, options = {}) {
 // ─── Cover XHTML generation ────────────────────────────────────────────
 function generateCoverXhtml(coverFilename, coverSize, options = {}) {
   const comic = options.comic === true;
+  const cssRelPaths = options.cssRelPaths || [];
+  const cssLinks = buildCssLinks('cover.xhtml', cssRelPaths);
 
   if (!coverFilename) {
     return `<?xml version="1.0" encoding="UTF-8"?>
@@ -3099,8 +3263,9 @@ function generateCoverXhtml(coverFilename, coverSize, options = {}) {
 <head>
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
   <title>Cover</title>
+  ${cssLinks}
 </head>
-<body>
+<body class="epc-cover-body">
   <h1>Cover</h1>
 </body>
 </html>
@@ -3121,11 +3286,12 @@ function generateCoverXhtml(coverFilename, coverSize, options = {}) {
   <meta charset="UTF-8" />
   <title>Cover</title>
   <meta name="viewport" content="width=${w}, height=${h}" />
+  ${cssLinks}
   <style>html,body { margin:0; padding:0; height:100%; background:#000; }</style>
 </head>
-<body>
-  <div style="display:flex; align-items:center; justify-content:center; height:100%;">
-    <img src="${escapeXml(href)}" alt="Cover" style="max-width:100%; max-height:100%;" />
+<body class="epc-cover-body">
+  <div class="epc-cover-wrap" style="display:flex; align-items:center; justify-content:center; height:100%;">
+    <img class="epc-cover-img" src="${escapeXml(href)}" alt="Cover" style="max-width:100%; max-height:100%;" />
   </div>
 </body>
 </html>
@@ -3139,6 +3305,7 @@ function generateCoverXhtml(coverFilename, coverSize, options = {}) {
 <head>
   <title>Cover</title>
   <meta name="viewport" content="width=device-width, height=device-height" />
+  ${cssLinks}
 </head>
 <body style="margin-top: 0px; margin-left: 0px; margin-right: 0px; margin-bottom: 0px;">
     <svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100%" height="99%" viewBox="0 0 600 800" preserveAspectRatio="xMidYMid meet"><image width="600" height="800" xlink:href="${escapeXml(href)}" alt="Cover" />
@@ -3316,7 +3483,6 @@ async function cmdImport(argv) {
   ensureDir(audioTarget);
 
   function resolveHref(href) {
-    // href relative to opfDir; resolve to epub-internal path
     const joined = path.posix.normalize(path.posix.join(opfDir, href));
     return joined;
   }
@@ -3398,8 +3564,12 @@ async function cmdImport(argv) {
     for (const idref of spineOrder) {
       const item = manifestMap[idref];
       if (!item) continue;
-      if (item.href === 'nav.xhtml' || item.href === 'toc.xhtml' || item.href === 'cover.xhtml') continue;
+
+      // FIX: skip nav/toc/cover/titlepage pakai basename match
+      const baseNameLower = path.basename(item.href).toLowerCase();
+      if (['nav.xhtml', 'toc.xhtml', 'cover.xhtml', 'titlepage.xhtml'].includes(baseNameLower)) continue;
       if (item.href === coverHref) continue;
+
       if (item.properties && item.properties.includes('rendition:layout-reflowable')) {
         // Back-matter: extract as-is
         const entry = findZipEntryByHref(item.href);
@@ -3418,7 +3588,9 @@ async function cmdImport(argv) {
       if (!entry) continue;
       const xhtmlContent = entry.getData().toString('utf8');
 
-      // Skip if not a page (no <img>)
+      // FIX: kalau ini halaman nav/toc (tidak ada <img> tapi ada <nav>), skip
+      if (/<nav\b[^>]*epub:type=["']toc["']/i.test(xhtmlContent)) continue;
+
       const imgMatch = xhtmlContent.match(/<img[^>]+src=["']([^"']+)["']/i);
       if (!imgMatch) {
         // Could be a text-only page or back-matter — save as back-matter
@@ -3673,6 +3845,7 @@ type: ${d.type}
 reading_direction: ${d.direction}
 spread: ${d.spread}
 fit_mode: contain
+custom_css: 
 
 title: ${d.mainTitle}
 subtitle: 
@@ -3694,6 +3867,7 @@ extra_titles: ${d.extraTitles.join(', ')}
 #  Halaman diekstrak ke EPUB/images/pages/ (flat, tanpa chapter)
 #  XHTML di-generate ke EPUB/xhtmls/
 #  ord.txt sudah terisi sesuai urutan spine EPUB asli
+#  nav/toc dari EPUB asli otomatis di-skip
 # ============================================================
 `;
 }
