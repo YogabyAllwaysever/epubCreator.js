@@ -2,50 +2,34 @@
 /**
  * epubcreator.js — Node CLI untuk kompilasi direktori ke EPUB
  *
- * Versi: 3.1.1-BETA (dukungan comic / manga / textbook + CSS custom)
+ * Versi: 4.0.0 (interactive menu + ANSI UI + comic/manga/textbook)
  *
  *  Copyright (C) 2026 YogabyAllwaysever.
  *
  * Cara pakai:
- *   node epubcreator.js createdir                  → buat struktur direktori (interaktif: textbook/comic/manga)
- *   node epubcreator.js createdir textbook         → paksa mode textbook
- *   node epubcreator.js createdir comic            → paksa mode comic (LTR)
- *   node epubcreator.js createdir manga            → paksa mode manga (RTL)
- *   node epubcreator.js convertch                  → ubah file .md menjadi .xhtml (default)
- *   node epubcreator.js convertch img2xhtml        → generate .xhtml dari gambar (mode comic/manga)
- *   node epubcreator.js convertch img2xhtml --fit=cover     → generate + override fit mode
- *   node epubcreator.js convertch img2xhtml --regen-ord     → generate + overwrite ord.txt
- *   node epubcreator.js convertch xhtml2md         → ubah file .xhtml menjadi .md
- *   node epubcreator.js convertch docx2md          → ubah file .docx menjadi .md (pecah berdasarkan ##)
- *   node epubcreator.js conv ...                   → alias untuk convertch
- *   node epubcreator.js split <path>               → pecah file .md berdasarkan heading ##
- *   node epubcreator.js merge <path>               → gabungkan file .md menjadi satu (kebalikan split)
- *   node epubcreator.js build                      → build EPUB dari direktori saat ini
- *   node epubcreator.js debug                      → pantau perubahan, auto convertch + build
- *   node epubcreator.js import                     → impor file .epub dari direktori saat ini
- *   node epubcreator.js updatemodule               → download/update node_modules dari repo
- *   node epubcreator.js updatemodule --force       → update tanpa konfirmasi
- *   node epubcreator.js updateconfig               → download/update .epubcreator dari repo (branch config)
- *   node epubcreator.js settings                   → ubah pengaturan tool (interaktif)
- *   node epubcreator.js validate                   → validasi EPUB terakhir dengan epubcheck
- *   node epubcreator.js --version                  → tampilkan versi
- *
- * Fitur ord.txt (opsional):
- *   - File di root buku, daftar urutan bab (satu baris satu nama file .xhtml)
- *   - Di mode comic/manga, format diperluas:
- *       [*|!]path/xhtml.xhtml | alt-text
- *       *  = force page-spread-center (double spread)
- *       !  = force single spread
- *   - Jika ada, urutan mengikuti daftar tersebut
- *   - Jika tidak ada, urutkan otomatis berdasarkan nama file (natural sort)
- *
- * Fitur CSS (comic/manga):
- *   - Auto-detect semua .css di EPUB/styles/
- *   - Atau set "custom_css: styles/a.css, styles/b.css" di config.txt
- *   - Setiap XHTML akan otomatis di-link ke CSS tersebut
+ *   node epubcreator.js                    → menu interaktif
+ *   node epubcreator.js createdir          → buat struktur direktori
+ *   node epubcreator.js createdir comic    → paksa mode comic (LTR)
+ *   node epubcreator.js createdir manga    → paksa mode manga (RTL)
+ *   node epubcreator.js convertch          → ubah file .md menjadi .xhtml
+ *   node epubcreator.js convertch img2xhtml → generate .xhtml dari gambar
+ *   node epubcreator.js convertch xhtml2md → ubah file .xhtml menjadi .md
+ *   node epubcreator.js convertch docx2md  → ubah file .docx menjadi .md
+ *   node epubcreator.js conv ...           → alias untuk convertch
+ *   node epubcreator.js split <path>       → pecah file .md berdasarkan ##
+ *   node epubcreator.js merge <path>       → gabungkan file .md
+ *   node epubcreator.js build              → build EPUB
+ *   node epubcreator.js debug              → pantau perubahan, auto build
+ *   node epubcreator.js import             → impor file .epub
+ *   node epubcreator.js updatemodule       → update node_modules dari repo
+ *   node epubcreator.js updateconfig       → update .epubcreator dari repo
+ *   node epubcreator.js settings           → ubah pengaturan tool
+ *   node epubcreator.js validate           → validasi EPUB dengan epubcheck
+ *   node epubcreator.js --version          → tampilkan versi
+ *   node epubcreator.js help               → tampilkan bantuan
  */
 
-const VERSION = '3.1.1-BETA';
+const VERSION = '4.0.0';
 
 const fs = require('fs');
 const path = require('path');
@@ -54,27 +38,37 @@ const crypto = require('crypto');
 const https = require('https');
 const { execSync } = require('child_process');
 
+// ─── Terminal colors (ANSI, ASCII-safe) ────────────────────────────────
+const _useColor = !!(process.stdout.isTTY && !process.env.NO_COLOR);
+const c = {
+  reset:  _useColor ? '\x1b[0m'  : '',
+  bold:   _useColor ? '\x1b[1m'  : '',
+  dim:    _useColor ? '\x1b[2m'  : '',
+  red:    _useColor ? '\x1b[31m' : '',
+  green:  _useColor ? '\x1b[32m' : '',
+  yellow: _useColor ? '\x1b[33m' : '',
+  cyan:   _useColor ? '\x1b[36m' : '',
+  gray:   _useColor ? '\x1b[90m' : '',
+};
+
 // ─── Konfigurasi tool ──────────────────────────────────────────────────
 const TOOL_DIR = '.epubcreator';
 const SETTINGS_FILE = path.join(TOOL_DIR, 'settings.txt');
-const LANG_DIR = path.join(TOOL_DIR, 'lang');
 
 const VALID_TYPES = ['textbook', 'comic', 'manga'];
 
-// ─── Pesan fallback hardcoded (hanya EN, sebagai last resort) ────────
-const FALLBACK_MESSAGES = {
+// ─── Pesan (EN) ───────────────────────────────────────────────────────
+const MESSAGES = {
   // Pesan umum
-  lang_changed: 'Language changed to {lang}.',
-  lang_saved: 'Language saved to {file}.',
-  missing_dep: '❌ Module "{mod}" (v{version}) not found. Install with:\n  npm install {mod}@{version}\n',
-  marked_old: '❌ "marked" version is too old. Reinstall with:\n  npm install marked@4.0.0\n',
+  missing_dep: 'Module "{mod}" (v{version}) not found. Install with:\n  npm install {mod}@{version}\n',
+  marked_old: '"marked" version is too old. Reinstall with:\n  npm install marked@4.0.0\n',
   cancelled: 'Cancelled.',
   file_exists: '{file} already exists. Overwrite? (y/n) ',
   overwritten: '{file} overwritten.',
   not_modified: '{file} unchanged.',
   created: '{file} created.',
   dir_created: 'Directory structure created at {dirs}',
-  ready: '✅ Directory and template files ready.',
+  ready: 'Directory and template files ready.',
 
   // convertch (MD→XHTML)
   markdowns_not_found: 'Markdowns/ directory not found. Create with "node epubcreator.js createdir"',
@@ -84,11 +78,11 @@ const FALLBACK_MESSAGES = {
   md_count: 'Found {count} .md files.',
   xhtml_exists: '{count} .xhtml files already exist. (Y) Overwrite all, (N) Copy all to Markdowns, (C) Cancel: ',
   convert_cancelled: 'Conversion cancelled.',
-  copy_md: '📋 Copy {file} to {dest}',
-  md_already_exists: 'ℹ️  {file} already exists in Markdowns, skipping copy.',
+  copy_md: 'Copy {file} to {dest}',
+  md_already_exists: '{file} already exists in Markdowns, skipping copy.',
   copy_done: 'Done: {count} .md files copied to Markdowns/.',
   skip_file: 'Skipping {file}',
-  convert_success: '✅ Successfully converted: {file}',
+  convert_success: 'Successfully converted: {file}',
   convert_fail: 'Failed to parse Markdown {file}: {error}',
   convert_summary: 'Done: {success} out of {total} files converted successfully.',
   invalid_path: 'Path is not a valid file or directory.',
@@ -100,32 +94,32 @@ const FALLBACK_MESSAGES = {
   skip_cover: 'Skipping {file} (excluded)',
   no_xhtml_found: 'No valid .xhtml files found in that directory.',
   xhtml_count: 'Found {count} .xhtml files.',
-  convertx_success: '✅ Successfully converted: {file}',
+  convertx_success: 'Successfully converted: {file}',
   convertx_fail: 'Failed to convert {file}: {error}',
   convertx_summary: 'Done: {success} out of {total} files converted successfully.',
 
   // convertch docx2md
   docx_no_files: 'No .docx files found.',
-  docx_processing: '📄 Processing: {file}',
-  docx_no_images: 'ℹ️ Image extraction from DOCX not yet supported; images will be ignored.',
-  docx_heading_mode_warn: '⚠️ Font size based heading mode is used (with configured thresholds).',
-  docx_nosplit_mode: 'ℹ️ No-split mode (--nosplit) is active, all content will be merged into one file.',
+  docx_processing: 'Processing: {file}',
+  docx_no_images: 'Image extraction from DOCX not yet supported; images will be ignored.',
+  docx_heading_mode_warn: 'Font size based heading mode is used (with configured thresholds).',
+  docx_nosplit_mode: 'No-split mode (--nosplit) is active, all content will be merged into one file.',
 
   // convertch img2xhtml (comic/manga)
   img2x_epub_not_found: 'EPUB/ directory not found. Run "createdir comic" or "createdir manga" first.',
   img2x_pages_not_found: 'EPUB/images/pages/ not found. Put page images there first.',
   img2x_no_images: 'No images found in EPUB/images/pages/.',
   img2x_images_found: 'Found {count} page image(s).',
-  img2x_generating: '🔧 Generating {file} ...',
-  img2x_generated: '✅ XHTML generated: {file}',
-  img2x_skipped: '⏭️  Skipped (up-to-date): {file}',
-  img2x_regen: '♻️  Regenerating (image newer): {file}',
-  img2x_ord_created: '📝 ord.txt created: {file}',
+  img2x_generating: 'Generating {file} ...',
+  img2x_generated: 'XHTML generated: {file}',
+  img2x_skipped: 'Skipped (up-to-date): {file}',
+  img2x_regen: 'Regenerating (image newer): {file}',
+  img2x_ord_created: 'ord.txt created: {file}',
   img2x_ord_exists: 'ord.txt already exists. New entries will be appended. Continue? (y/n) ',
-  img2x_ord_skip: 'ℹ️  ord.txt not modified.',
-  img2x_ord_appended: '📝 {count} new entries appended to ord.txt.',
+  img2x_ord_skip: 'ord.txt not modified.',
+  img2x_ord_appended: '{count} new entries appended to ord.txt.',
   img2x_ord_regen_confirm: 'ord.txt will be regenerated (existing edits will be lost). Continue? (y/n) ',
-  img2x_ord_regen: '📝 ord.txt regenerated: {file}',
+  img2x_ord_regen: 'ord.txt regenerated: {file}',
   img2x_ord_cancelled: 'ord.txt regeneration cancelled.',
   img2x_summary: 'Done: {success} XHTML generated, {skipped} skipped, {total} total.',
 
@@ -143,7 +137,7 @@ const FALLBACK_MESSAGES = {
   merge_no_files: 'No .md files found in {path}.',
   merge_processing: 'Merging {count} files ...',
   merge_created: 'Merged file created: {file}',
-  merge_summary: '✅ {count} files successfully merged into {output}.',
+  merge_summary: '{count} files successfully merged into {output}.',
   merge_output_file: 'Output: {file}',
 
   // build
@@ -153,59 +147,59 @@ const FALLBACK_MESSAGES = {
   author_missing: 'config.txt must have "author"',
   no_chapters: 'No chapters (.xhtml files) found in EPUB/ (excluding cover/toc/nav)',
   chapters_found: 'Found {count} chapters.',
-  cover_missing: '⚠️  No cover image found in EPUB/images/ — cover will be without image.',
+  cover_missing: 'No cover image found in EPUB/images/ - cover will be without image.',
   cover_found: 'Cover: {file}',
   media_summary: 'Images: {images} | Audio/Video: {audio}',
-  epub_built: '✅ EPUB built successfully: {path} ({size} KB)',
+  epub_built: 'EPUB built successfully: {path} ({size} KB)',
   zip_error: 'Failed to create ZIP: {error}',
   warning_ord_not_found: 'Warning: file "{file}" in ord.txt not found in EPUB/',
 
   // build comic/manga
-  comic_mode: '📖 Comic mode: {type} ({direction}, spread: {spread})',
+  comic_mode: 'Comic mode: {type} ({direction}, spread: {spread})',
   comic_pages_found: 'Found {count} page(s).',
-  comic_double_detected: '↔️  Page {page} detected as double-spread (ratio {ratio}).',
+  comic_double_detected: 'Page {page} detected as double-spread (ratio {ratio}).',
   comic_pages_dir_missing: 'EPUB/images/pages/ not found. Put page images there first.',
   comic_xhtmls_missing: 'EPUB/xhtmls/ not found. Run "convertch img2xhtml" first.',
-  comic_syncing: '🔄 Syncing XHTML from images...',
-  comic_css_found: '🎨 Custom CSS: {list}',
+  comic_syncing: 'Syncing XHTML from images...',
+  comic_css_found: 'Custom CSS: {list}',
 
   // import
   import_no_epub: 'No .epub file found in this directory.',
   import_select: 'Select EPUB file to import:',
   import_select_prompt: 'Enter number (1-{count}): ',
   import_invalid_choice: 'Invalid choice.',
-  import_extracting: '📦 Extracting {file} ...',
-  import_done: '✅ Import completed.',
+  import_extracting: 'Extracting {file} ...',
+  import_done: 'Import completed.',
   import_summary: '   Chapters/Pages: {chapters}, Images: {images}, Audio/Video: {audio}',
-  import_hint: '💡 Run "node epubcreator.js convertch xhtml2md" to convert .xhtml to .md if needed.',
+  import_hint: 'Run "node epubcreator.js convertch xhtml2md" to convert .xhtml to .md if needed.',
   import_skip_non_spine: 'Skipping non-chapter file: {file}',
   import_cover_found: 'Cover found: {file}',
   import_force_overwrite: 'Overwriting existing files (--force).',
-  import_comic_detected: '📚 Detected fixed-layout ({type}, {direction})',
+  import_comic_detected: 'Detected fixed-layout ({type}, {direction})',
   import_comic_pages: 'Extracted {count} page(s) to EPUB/images/pages/',
-  import_ord_written: '📝 ord.txt written with {count} entries.',
+  import_ord_written: 'ord.txt written with {count} entries.',
 
   // updatemodule & updateconfig
   node_modules_missing: 'node_modules not found.',
   download_confirm: 'Download pre-built dependencies from repository? (y/n) ',
-  extract_no_assets: '❌ Folder assets/node_modules not found in archive.',
-  download_start: '📥 Downloading bundle ...',
-  download_complete: '✅ Download complete. Extracting ...',
-  download_failed: '❌ Failed to download bundle: {error}',
-  extract_failed: '❌ Failed to extract node_modules: {error}',
-  extract_success: '✅ node_modules extracted successfully.',
-  tar_not_found: '❌ "tar" command not found. Please ensure tar is installed (Linux/macOS/Termux) or use Git Bash on Windows.',
+  extract_no_assets: 'Folder assets/node_modules not found in archive.',
+  download_start: 'Downloading bundle ...',
+  download_complete: 'Download complete. Extracting ...',
+  download_failed: 'Failed to download bundle: {error}',
+  extract_failed: 'Failed to extract node_modules: {error}',
+  extract_success: 'node_modules extracted successfully.',
+  tar_not_found: '"tar" command not found. Please ensure tar is installed (Linux/macOS/Termux) or use Git Bash on Windows.',
   update_confirm: 'This will replace your existing node_modules folder. Continue? (y/n) ',
   update_force: 'Overwriting node_modules (--force).',
 
   // validate
   validate_no_epub: 'No .epub file found in builds/',
-  validate_start: '🔍 Validating {file} ...',
-  validate_ok: '✅ Validation passed for {file}',
-  validate_fail: '❌ Validation failed:\n{output}',
+  validate_start: 'Validating {file} ...',
+  validate_ok: 'Validation passed for {file}',
+  validate_fail: 'Validation failed:\n{output}',
 
   // debug
-  debug_usage: 'node epubcreator.js debug  → Watch changes, auto convertch + build',
+  debug_usage: 'node epubcreator.js debug  -> Watch changes, auto convertch + build',
   debug_start: 'Watching Markdowns/ for changes... Press Ctrl+C to stop.',
   debug_start_comic: 'Watching EPUB/images/pages/ for changes... Press Ctrl+C to stop.',
   debug_change: 'Changes detected, rebuilding...',
@@ -216,45 +210,46 @@ const FALLBACK_MESSAGES = {
   // settings command
   settings_title: '=== .epubcreator/settings.txt ===',
   settings_prompt: 'Press Enter to keep current value, or type new value. Type "save" to save, "cancel" to abort.',
-  settings_saved: '✅ Settings saved to {file}.',
+  settings_saved: 'Settings saved to {file}.',
   settings_cancelled: 'Settings cancelled.',
   settings_invalid_value: 'Invalid value. Keeping previous.',
 
   // updateconfig
   updateconfig_confirm: 'This will replace your existing .epubcreator folder. Continue? (y/n) ',
   updateconfig_force: 'Overwriting .epubcreator (--force).',
-  updateconfig_fetching: '📥 Downloading configuration bundle from config branch...',
+  updateconfig_fetching: 'Downloading configuration bundle from config branch...',
   updateconfig_extracting: 'Extracting configuration...',
-  updateconfig_success: '✅ .epubcreator updated successfully.',
-  updateconfig_no_assets: '❌ Folder .epubcreator not found in archive.',
-  updateconfig_failed: '❌ Failed to update config: {error}',
+  updateconfig_success: '.epubcreator updated successfully.',
+  updateconfig_no_assets: 'Folder .epubcreator not found in archive.',
+  updateconfig_failed: 'Failed to update config: {error}',
 
   // createdir
   createdir_update_config: 'Updating .epubcreator from config branch...',
   createdir_skip_update: 'Skipping .epubcreator update.',
   createdir_type_prompt: 'Type (textbook/comic/manga) [{default}]: ',
-  createdir_chapters_prompt: 'Punya chapters? (y/n) [n]: ',
+  createdir_chapters_prompt: 'Have chapters? (y/n) [n]: ',
   createdir_direction_prompt: 'Reading direction (ltr/rtl) [{default}]: ',
-  createdir_invalid_type: '⚠️  Invalid type "{type}". Using default.',
-  createdir_invalid_direction: '⚠️  Invalid direction "{dir}". Using default.',
-  createdir_cover_hint: '⚠️  Taruh cover di EPUB/images/cover.jpg',
-  createdir_pages_hint: '⚠️  Taruh halaman komik di EPUB/images/pages/',
-  createdir_styles_hint: '⚠️  (Opsional) Taruh CSS custom di EPUB/styles/',
+  createdir_invalid_type: 'Invalid type "{type}". Using default.',
+  createdir_invalid_direction: 'Invalid direction "{dir}". Using default.',
+  createdir_cover_hint: 'Place cover at EPUB/images/cover.jpg',
+  createdir_pages_hint: 'Place comic pages at EPUB/images/pages/',
+  createdir_styles_hint: '(Optional) Place custom CSS at EPUB/styles/',
 
   // command unknown
   unknown_command: 'Unknown command: {cmd}',
   usage_hint: 'Use: createdir | convertch | conv | split | merge | build | debug | import | updatemodule | updateconfig | settings | validate | --version',
 
   // Help
-  help_title: '📚 epubcreator — CLI for compiling directory to EPUB  (v{version})',
+  help_title: 'epubcreator — CLI for compiling directory to EPUB  (v{version})',
   help_commands: `
+  node epubcreator.js                    Open interactive menu
   node epubcreator.js createdir           Create directory structure (interactive: textbook/comic/manga)
   node epubcreator.js createdir comic     Create comic directory (LTR)
   node epubcreator.js createdir manga     Create manga directory (RTL)
-  node epubcreator.js convertch           Convert .md → .xhtml (default, looks in Markdowns/)
+  node epubcreator.js convertch           Convert .md -> .xhtml (default, looks in Markdowns/)
   node epubcreator.js convertch img2xhtml Generate .xhtml from images (comic/manga mode)
-  node epubcreator.js convertch xhtml2md  Convert .xhtml → .md
-  node epubcreator.js convertch docx2md   Convert .docx → .md (split by ##)
+  node epubcreator.js convertch xhtml2md  Convert .xhtml -> .md
+  node epubcreator.js convertch docx2md   Convert .docx -> .md (split by ##)
   node epubcreator.js conv ...            Alias for convertch
   node epubcreator.js split <path>        Split .md file by heading ##
   node epubcreator.js merge <path>        Merge .md files into one (reverse of split)
@@ -270,41 +265,35 @@ const FALLBACK_MESSAGES = {
   help_structure: `
 Directory structure (textbook):
   ./
-  ├── config.txt          ← book metadata (required), type: textbook
-  ├── ord.txt             ← chapter order list (optional)
-  ├── Docs/               ← source .docx files (for docx2md)
-  ├── Markdowns/          ← source .md files (for convertch)
+  ├── config.txt          <- book metadata (required), type: textbook
+  ├── ord.txt             <- chapter order list (optional)
+  ├── Docs/               <- source .docx files (for docx2md)
+  ├── Markdowns/          <- source .md files (for convertch)
   ├── EPUB/
   │   ├── images/
-  │   │   └── cover.png   ← REQUIRED
-  │   ├── audiovideo/     ← optional
-  │   └── bab1.xhtml      ← chapters (any name, in EPUB/ root)
+  │   │   └── cover.png   <- REQUIRED
+  │   ├── audiovideo/     <- optional
+  │   └── bab1.xhtml      <- chapters (any name, in EPUB/ root)
   └── builds/
       └── [folder-name].epub
 
 Directory structure (comic/manga):
   ./
-  ├── config.txt          ← type: comic | manga, reading_direction: ltr | rtl
-  ├── ord.txt             ← optional: ordered list with * / ! / | alt
+  ├── config.txt          <- type: comic | manga, reading_direction: ltr | rtl
+  ├── ord.txt             <- optional: ordered list with * / ! / | alt
   ├── EPUB/
   │   ├── images/
-  │   │   ├── cover.jpg   ← REQUIRED
+  │   │   ├── cover.jpg   <- REQUIRED
   │   │   └── pages/
-  │   │       ├── ch1/    ← optional chapter grouping
+  │   │       ├── ch1/    <- optional chapter grouping
   │   │       │   ├── 0001.jpg
   │   │       │   └── 0002.jpg
   │   │       └── ch2/
   │   │           └── 0001.jpg
-  │   ├── xhtmls/         ← auto-generated by "convertch img2xhtml"
-  │   │   ├── ch1/
-  │   │   │   ├── 0001.xhtml
-  │   │   │   └── 0002.xhtml
-  │   │   └── ch2/
-  │   │       └── 0001.xhtml
-  │   ├── styles/         ← optional custom CSS
-  │   │   └── comic.css
-  │   ├── about.xhtml     ← back-matter (reflowable) optional
-  │   └── audiovideo/     ← optional
+  │   ├── xhtmls/         <- auto-generated by "convertch img2xhtml"
+  │   ├── styles/         <- optional custom CSS
+  │   ├── about.xhtml     <- back-matter (reflowable) optional
+  │   └── audiovideo/     <- optional
   └── builds/
       └── [folder-name].epub`,
   help_deps: `
@@ -317,40 +306,19 @@ For validation: install epubcheck (https://github.com/w3c/epubcheck)
 };
 
 // ─── Variabel global ──────────────────────────────────────────────────
-let currentLang = 'en';
-let messages = { ...FALLBACK_MESSAGES };
+let interactiveMode = false;
 
-// ─── Fungsi untuk memuat bahasa dari file ─────────────────────────────
-function loadLanguageFile(lang) {
-  const langFile = path.join(LANG_DIR, `${lang}.txt`);
-  if (fs.existsSync(langFile)) {
-    try {
-      const content = fs.readFileSync(langFile, 'utf8');
-      const lines = content.split('\n');
-      const loaded = {};
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) continue;
-        const idx = trimmed.indexOf('=');
-        if (idx === -1) continue;
-        const key = trimmed.slice(0, idx).trim();
-        const value = trimmed.slice(idx + 1).trim();
-        if (key && value) {
-          loaded[key] = value;
-        }
-      }
-      messages = { ...FALLBACK_MESSAGES, ...loaded };
-    } catch (_) {
-      // fallback tetap
-    }
-  }
+// ─── Emoji strip (safety net) ─────────────────────────────────────────
+const EMOJI_PREFIX_RE = /^[\s\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2139}\u{2190}-\u{21FF}\u{2300}-\u{23FF}\u{FE0F}\u{200D}]+/u;
+
+function stripEmojiPrefix(str) {
+  return String(str).replace(EMOJI_PREFIX_RE, '');
 }
 
 // ─── Fungsi untuk memuat settings ─────────────────────────────────────
 function loadSettings() {
   const settingsPath = path.join(process.cwd(), SETTINGS_FILE);
   const defaults = {
-    lang: 'en',
     watch_delay: '500',
     auto_build: 'false',
     overwrite_policy: 'ask',
@@ -380,19 +348,32 @@ function loadSettings() {
   return settings;
 }
 
-// ─── Fungsi terjemahan ─────────────────────────────────────────────────
+// ─── Fungsi terjemahan / substitusi string ────────────────────────────
 function t(key, params = {}) {
-  let str = messages[key] || FALLBACK_MESSAGES[key] || key;
+  let str = MESSAGES[key] || key;
+  str = stripEmojiPrefix(str);
   for (const [k, v] of Object.entries(params)) {
     str = str.replace(new RegExp(`{${k}}`, 'g'), v);
   }
   return str;
 }
 
+// ─── Log styles (ANSI + ASCII prefix) ─────────────────────────────────
+const LOG_STYLES = {
+  info:    { tag: '[i] ', color: c.cyan },
+  success: { tag: '[OK]', color: c.green },
+  warn:    { tag: '[!] ', color: c.yellow },
+  error:   { tag: '[!!]', color: c.red },
+};
+
+function log(msg, type = 'info') {
+  const s = LOG_STYLES[type] || LOG_STYLES.info;
+  const cleanMsg = stripEmojiPrefix(String(msg));
+  console.log(`${s.color}${s.tag}${c.reset} ${cleanMsg}`);
+}
+
 function logI18n(key, params = {}, type = 'info') {
-  const icons = { info: 'ℹ️', success: '✅', warn: '⚠️', error: '❌' };
-  const msg = t(key, params);
-  console.log(`${icons[type] || ''} ${msg}`);
+  log(t(key, params), type);
 }
 
 // ─── Cek dependensi ──────────────────────────────────────────────────
@@ -436,13 +417,16 @@ const rl = readline.createInterface({
   output: process.stdout,
 });
 
-function question(prompt) {
-  return new Promise((resolve) => rl.question(prompt, resolve));
+process.on('exit', () => {
+  try { rl.close(); } catch (_) {}
+});
+
+function closeRL() {
+  if (!interactiveMode) rl.close();
 }
 
-function log(msg, type = 'info') {
-  const icons = { info: 'ℹ️', success: '✅', warn: '⚠️', error: '❌' };
-  console.log(`${icons[type] || ''} ${msg}`);
+function question(prompt) {
+  return new Promise((resolve) => rl.question(prompt, resolve));
 }
 
 function ensureDir(dir) {
@@ -468,6 +452,24 @@ function extractTitleFromMd(content) {
   const match = content.match(/^##\s+(.+)$/m);
   if (match) return match[1].trim();
   return null;
+}
+
+// ─── Sleep & pause helper ──────────────────────────────────────────────
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function pauseBeforeMenu(seconds = 3) {
+  if (!process.stdout.isTTY) {
+    await sleep(seconds * 1000);
+    return;
+  }
+  for (let i = seconds; i > 0; i--) {
+    const line = `  ${c.gray}Returning to menu in ${i}s...${c.reset}`;
+    process.stdout.write(`\r${line}${' '.repeat(8)}`);
+    await sleep(1000);
+  }
+  process.stdout.write(`\r${' '.repeat(50)}\r`);
 }
 
 // ─── Generic walkers ───────────────────────────────────────────────────
@@ -536,15 +538,12 @@ function naturalSort(arr) {
 function getImageSize(filePath) {
   try {
     const buf = fs.readFileSync(filePath);
-    // PNG
     if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {
       return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
     }
-    // GIF
     if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) {
       return { width: buf.readUInt16LE(6), height: buf.readUInt16LE(8) };
     }
-    // JPEG
     if (buf[0] === 0xFF && buf[1] === 0xD8) {
       let i = 2;
       while (i < buf.length - 8) {
@@ -567,7 +566,6 @@ function getImageSize(filePath) {
         i += 2 + len;
       }
     }
-    // WebP (RIFF....WEBP)
     if (buf.slice(0, 4).toString() === 'RIFF' && buf.slice(8, 12).toString() === 'WEBP') {
       const chunk = buf.slice(12, 16).toString();
       if (chunk === 'VP8 ') {
@@ -590,7 +588,6 @@ function getImageSize(filePath) {
   return null;
 }
 
-// ─── SVG dimension detector (fallback) ─────────────────────────────────
 function getSvgSize(filePath) {
   try {
     const svg = fs.readFileSync(filePath, 'utf8');
@@ -628,8 +625,8 @@ function chapterTitleFromFolder(folderName) {
 function readChapterTitleOverride(folderPath) {
   const titleFile = path.join(folderPath, '_title.txt');
   if (fs.existsSync(titleFile)) {
-    const t = fs.readFileSync(titleFile, 'utf8').trim();
-    if (t) return t;
+    const tt = fs.readFileSync(titleFile, 'utf8').trim();
+    if (tt) return tt;
   }
   return null;
 }
@@ -646,7 +643,6 @@ function epubRelative(fromEpubFile, toEpubFile) {
 
 // ─── CSS helpers ───────────────────────────────────────────────────────
 function collectCssFiles(epubDir, config) {
-  // Prioritas: config.custom_css → fallback auto-detect EPUB/styles/*.css
   const result = [];
   if (config && config.custom_css) {
     const list = config.custom_css.split(',').map(s => s.trim()).filter(Boolean);
@@ -671,7 +667,6 @@ function collectCssFiles(epubDir, config) {
 }
 
 function buildCssLinks(fromXhtmlEpubPath, cssRelPaths) {
-  // fromXhtmlEpubPath: e.g. "xhtmls/ch1/0001.xhtml" atau "cover.xhtml"
   if (!cssRelPaths || cssRelPaths.length === 0) return '';
   const fromDir = path.posix.dirname(epubPathToPosix(fromXhtmlEpubPath));
   return cssRelPaths.map(css => {
@@ -728,7 +723,6 @@ function writeOrdFile(ordPath, entries, comicMode = false) {
     let prefix = '';
     if (comicMode && e.spread === 'center') prefix = '*';
     else if (comicMode && e.spread === 'single') prefix = '!';
-    // FIX: normalize path ke posix supaya konsisten antar OS
     const normPath = epubPathToPosix(String(e.path || ''));
     let line = `${prefix}${normPath}`;
     if (comicMode && e.alt) line += ` | ${e.alt}`;
@@ -770,7 +764,7 @@ function generatePageXhtml(imgHref, altText, w, h, fitMode = 'contain', cssLinks
 `;
 }
 
-// ─── Sync XHTML dari images (core img2xhtml) ───────────────────────────
+// ─── Sync XHTML dari images ────────────────────────────────────────────
 async function syncXhtmlFromImages(epubDir, opts = {}) {
   const silent = opts.silent === true;
   const force = opts.force === true;
@@ -806,16 +800,13 @@ async function syncXhtmlFromImages(epubDir, opts = {}) {
     const xhtmlPath = path.join(xhtmlsDir, relXhtml);
     ensureDir(path.dirname(xhtmlPath));
 
-    // FIX: hitung path gambar relatif ke FOLDER XHTML, bukan ke xhtmls/
     const xhtmlDirPath = path.dirname(xhtmlPath);
     const imgRelToXhtml = path.relative(xhtmlDirPath, imgPath);
     const imgHref = epubPathToPosix(imgRelToXhtml);
 
-    // Path XHTML relatif EPUB untuk hitung CSS link
     const xhtmlRelEpub = epubPathToPosix(path.relative(epubDir, xhtmlPath));
     const cssLinks = buildCssLinks(xhtmlRelEpub, cssRelPaths);
 
-    // Deteksi apakah perlu regenerate
     let needGen = true;
     if (fs.existsSync(xhtmlPath) && !force) {
       try {
@@ -826,7 +817,6 @@ async function syncXhtmlFromImages(epubDir, opts = {}) {
           const fitMatch = content.match(/<meta\s+name="epubcreator:fit_mode"\s+content="([^"]*)"/i);
           const existingFit = fitMatch ? fitMatch[1] : null;
           const fitChanged = existingFit !== fitMode;
-          // Kalau ada CSS, cek apakah XHTML lama sudah punya link .css
           const contentHasCss = /\.css["']/.test(content);
           const cssChanged = hasCss && !contentHasCss;
           if (!fitChanged && !cssChanged) {
@@ -855,14 +845,13 @@ async function syncXhtmlFromImages(epubDir, opts = {}) {
   return { generated, skipped, total: images.length, generatedPaths };
 }
 
-// ─── Chapter info extraction for TOC grouping ──────────────────────────
+// ─── Chapter info extraction ───────────────────────────────────────────
 function getChapterKey(relXhtmlPath) {
   const parts = relXhtmlPath.split(/[\\/]/);
   if (parts.length <= 1) return null;
   return parts[0];
 }
 
-// ─── Helper: safe parse config (return null kalau gagal) ───────────────
 function safeParseConfig() {
   const p = path.join(process.cwd(), 'config.txt');
   if (!fs.existsSync(p)) return null;
@@ -874,14 +863,13 @@ async function cmdImg2Xhtml(argv) {
   const epubDir = path.join(process.cwd(), 'EPUB');
   if (!fs.existsSync(epubDir)) {
     logI18n('img2x_epub_not_found', {}, 'error');
-    rl.close();
+    closeRL();
     return;
   }
 
   const force = argv.includes('--force') || argv.includes('-f');
   const regenOrd = argv.includes('--regen-ord');
 
-  // Parse --fit=xxx
   let fitMode = null;
   const fitArg = argv.find(a => a.startsWith('--fit='));
   if (fitArg) {
@@ -889,24 +877,20 @@ async function cmdImg2Xhtml(argv) {
     if (['contain', 'cover', 'width', 'height', 'none'].includes(v)) fitMode = v;
   }
   if (!fitMode) {
-    // Baca dari config.txt
     const cfg = safeParseConfig();
     if (cfg && cfg.fit_mode) fitMode = cfg.fit_mode.toLowerCase();
   }
   if (!fitMode) fitMode = 'contain';
 
-  // Collect CSS
   const cfg = safeParseConfig();
   const cssRelPaths = collectCssFiles(epubDir, cfg);
 
   const result = await syncXhtmlFromImages(epubDir, { silent: false, force, fitMode, cssRelPaths });
 
-  // Handle ord.txt
   const ordPath = path.join(process.cwd(), 'ord.txt');
   const ordExists = fs.existsSync(ordPath);
 
   if (!ordExists) {
-    // Generate fresh
     const entries = naturalSort(result.generatedPaths).map(p => ({ path: p, alt: null, spread: null }));
     writeOrdFile(ordPath, entries, true);
     logI18n('img2x_ord_created', { file: ordPath }, 'success');
@@ -920,7 +904,6 @@ async function cmdImg2Xhtml(argv) {
       logI18n('img2x_ord_cancelled', {}, 'warn');
     }
   } else {
-    // Merge: append entries not already present
     const existing = parseOrdFile(ordPath, true);
     const existingSet = new Set(existing.map(e => epubPathToPosix(e.path)));
     const newEntries = [];
@@ -950,7 +933,7 @@ async function cmdImg2Xhtml(argv) {
     total: result.total,
   }, 'info');
 
-  rl.close();
+  closeRL();
 }
 
 // ─── Chapter title detection ───────────────────────────────────────────
@@ -960,20 +943,18 @@ function chapterTitleFromFolderOrOverride(epubDir, folder) {
   return chapterTitleFromFolder(folder);
 }
 
-// ─── Collect comic pages (from xhtmls + ord.txt) ───────────────────────
+// ─── Collect comic pages ───────────────────────────────────────────────
 function collectComicPages(epubDir, ordPath) {
   const xhtmlsDir = path.join(epubDir, 'xhtmls');
   if (!fs.existsSync(xhtmlsDir)) {
     return [];
   }
 
-  // Walk all XHTML files in xhtmls/
   const allXhtml = walkFilesRecursive(xhtmlsDir, (p) => p.toLowerCase().endsWith('.xhtml'));
   if (allXhtml.length === 0) return [];
 
   const xhtmlRelSet = new Set(allXhtml.map(f => epubPathToPosix(path.relative(xhtmlsDir, f))));
 
-  // Parse ord.txt if exists
   const ordEntries = parseOrdFile(ordPath, true);
   let ordered = [];
 
@@ -986,7 +967,6 @@ function collectComicPages(epubDir, ordPath) {
         logI18n('warning_ord_not_found', { file: e.path }, 'warn');
       }
     }
-    // Any XHTML not in ord.txt → append at end
     const orderedSet = new Set(ordered.map(o => o.relPath));
     const leftovers = naturalSort([...xhtmlRelSet].filter(p => !orderedSet.has(p)));
     for (const p of leftovers) {
@@ -999,7 +979,7 @@ function collectComicPages(epubDir, ordPath) {
   return ordered;
 }
 
-// ─── Collect back-matter XHTML (EPUB/ root, excluding generated) ───────
+// ─── Collect back-matter XHTML ─────────────────────────────────────────
 function collectBackMatter(epubDir) {
   const exclude = ['cover.xhtml', 'toc.xhtml', 'nav.xhtml', 'volume.opf'];
   const result = [];
@@ -1013,7 +993,6 @@ function collectBackMatter(epubDir) {
       let title = path.basename(item, '.xhtml');
       try {
         const content = fs.readFileSync(fullPath, 'utf8');
-        // FIX: skip kalau ini halaman nav/toc (bukan back-matter sebenarnya)
         if (/<nav\b[^>]*epub:type=["']toc["']/i.test(content)) continue;
         if (/epub:type=["']toc["']/i.test(content) && !/<img\b/i.test(content)) continue;
         if (/<nav\b/i.test(content) && !/<img\b/i.test(content)) continue;
@@ -1028,7 +1007,6 @@ function collectBackMatter(epubDir) {
 
 // ─── Double-spread detection ───────────────────────────────────────────
 function detectDoubleSpread(epubDir, relPagePath) {
-  // relPagePath = 'ch1/0001.xhtml' relative to xhtmls/
   const imgDir = path.join(epubDir, 'images', 'pages');
   const ext = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg'];
   const baseRel = relPagePath.replace(/\.xhtml$/i, '');
@@ -1036,7 +1014,6 @@ function detectDoubleSpread(epubDir, relPagePath) {
     const imgPath = path.join(imgDir, baseRel + e);
     if (fs.existsSync(imgPath)) {
       let size = getImageSize(imgPath);
-      // FIX: SVG tidak dibaca oleh getImageSize, pakai fallback
       if (!size && e === '.svg') size = getSvgSize(imgPath);
       if (size && size.height > 0) {
         const ratio = size.width / size.height;
@@ -1049,16 +1026,7 @@ function detectDoubleSpread(epubDir, relPagePath) {
   return { double: false, ratio: 1 };
 }
 
-// ─── Split chapter + page from xhtml rel path ──────────────────────────
-function splitChapterAndPage(relPath) {
-  const parts = relPath.split(/[\\/]/);
-  if (parts.length <= 1) {
-    return { chapter: null, pageFile: parts[0] || relPath };
-  }
-  return { chapter: parts[0], pageFile: parts.slice(1).join('/') };
-}
-
-// ─── Display heading ───────────────────────────────────────────────────
+// ─── XHTML renderer ────────────────────────────────────────────────────
 function createXhtmlRenderer(marked) {
   const renderer = new marked.Renderer();
   renderer.image = function(href, title, text) {
@@ -1168,7 +1136,7 @@ function adjustHeadings(html, mapping) {
   }
 }
 
-// ─── Download & ekstrak (generik) ─────────────────────────────────────
+// ─── Download & ekstrak ───────────────────────────────────────────────
 function isTarAvailable() {
   try {
     execSync('tar --version', { stdio: 'ignore' });
@@ -1280,13 +1248,11 @@ async function downloadAndExtract(url, destDir, srcPath, stripComponents = 0) {
 async function cmdCreateDir(argv) {
   const cwd = process.cwd();
 
-  // Tentukan type
   const settings = loadSettings();
   let typeArg = argv.find(a => !a.startsWith('--'));
   let type = typeArg ? typeArg.toLowerCase() : null;
 
   if (!typeArg) {
-    // Ask interactively
     const def = (settings.default_type || 'textbook').toLowerCase();
     const ans = await question(t('createdir_type_prompt', { default: def }));
     type = (ans.trim() || def).toLowerCase();
@@ -1303,7 +1269,6 @@ async function cmdCreateDir(argv) {
     await createComicStructure(type);
   }
 
-  // Download .epubcreator dari branch config
   const epubCreatorDir = path.join(cwd, TOOL_DIR);
   if (fs.existsSync(epubCreatorDir)) {
     const ans = await question(`.epubcreator already exists. Update from config branch? (y/n) `);
@@ -1330,7 +1295,6 @@ async function cmdCreateDir(argv) {
     }
   }
 
-  // Auto-fetch node_modules
   const nodeModulesDir = path.join(cwd, 'node_modules');
   if (!fs.existsSync(nodeModulesDir)) {
     logI18n('node_modules_missing', {}, 'warn');
@@ -1347,11 +1311,11 @@ async function cmdCreateDir(argv) {
       logI18n('cancelled', {}, 'warn');
     }
   } else {
-    log('ℹ️ node_modules already exists, skipping download.', 'info');
+    log('node_modules already exists, skipping download.', 'info');
   }
 
   logI18n('ready', {}, 'success');
-  rl.close();
+  closeRL();
 }
 
 async function createTextbookStructure() {
@@ -1419,11 +1383,9 @@ async function createComicStructure(type) {
   ensureDir(stylesDir);
   ensureDir(audioDir);
 
-  // Ask: chapters?
   const chapAns = await question(t('createdir_chapters_prompt'));
   const hasChapters = chapAns.trim().toLowerCase() === 'y';
 
-  // Ask: reading direction
   const defDir = defaultDirectionFor(type);
   const dirAns = await question(t('createdir_direction_prompt', { default: defDir }));
   let direction = (dirAns.trim() || defDir).toLowerCase();
@@ -1455,7 +1417,6 @@ async function createComicStructure(type) {
     }
   }
 
-  // ord.txt: comment template only
   const ordTemplate = [
     '# Daftar urutan halaman (satu baris satu .xhtml, path relatif dari EPUB/xhtmls/)',
     '# Format: [*|!]path [| alt-text]',
@@ -1493,7 +1454,7 @@ async function createComicStructure(type) {
 
 function buildTextbookConfigTemplate() {
   return `# ============================================================
-#  METADATA BUKU  —  edit nilai di bawah ini sesuai kebutuhan
+#  METADATA BUKU  -  edit nilai di bawah ini sesuai kebutuhan
 # ============================================================
 
 # Tipe buku: textbook | comic | manga
@@ -1543,7 +1504,7 @@ contributors:
 extra_titles: 
 
 # ============================================================
-#  KONVERSI DOCX → MARKDOWN (opsional)
+#  KONVERSI DOCX -> MARKDOWN (opsional)
 # ============================================================
 # [docx-mapping]
 # heading1 = 24
@@ -1554,16 +1515,15 @@ extra_titles:
 #  STRUKTUR DIREKTORI (textbook):
 #
 #   ./
-#   ├── config.txt
-#   ├── ord.txt          ← opsional
-#   ├── Docs/            ← .docx sumber
-#   ├── Markdowns/       ← .md sumber
-#   └── EPUB/
-#       ├── images/
-#       │   └── cover.png   ← WAJIB ada
-#       ├── audiovideo/     ← opsional
-#       ├── bab1.xhtml      ← bab (di root EPUB/)
-#       └── ...
+#   |-- config.txt
+#   |-- ord.txt          <- opsional
+#   |-- Docs/            <- .docx sumber
+#   |-- Markdowns/       <- .md sumber
+#   |-- EPUB/
+#       |-- images/
+#       |   |-- cover.png   <- WAJIB ada
+#       |-- audiovideo/     <- opsional
+#       |-- bab1.xhtml      <- bab (di root EPUB/)
 #
 #  Jalankan:  node epubcreator.js build
 # ============================================================
@@ -1572,7 +1532,7 @@ extra_titles:
 
 function buildComicConfigTemplate(type, direction) {
   return `# ============================================================
-#  METADATA BUKU  —  edit nilai di bawah ini sesuai kebutuhan
+#  METADATA BUKU  -  edit nilai di bawah ini sesuai kebutuhan
 # ============================================================
 
 # Tipe buku: textbook | comic | manga
@@ -1588,8 +1548,6 @@ spread: auto
 fit_mode: contain
 
 # CSS custom (opsional). Kosongkan untuk auto-detect dari EPUB/styles/
-# Format: comma-separated path relatif dari EPUB/
-# Contoh: styles/comic.css, styles/theme-dark.css
 custom_css: 
 
 # Judul utama (wajib)
@@ -1638,21 +1596,19 @@ extra_titles:
 #  STRUKTUR DIREKTORI (comic/manga):
 #
 #   ./
-#   ├── config.txt
-#   ├── ord.txt             ← opsional: [*|!]path [| alt]
-#   └── EPUB/
-#       ├── images/
-#       │   ├── cover.jpg   ← WAJIB ada
-#       │   └── pages/
-#       │       ├── ch1/
-#       │       │   ├── 0001.jpg
-#       │       │   └── 0002.jpg
-#       │       └── ch2/
-#       │           └── 0001.jpg
-#       ├── xhtmls/         ← auto-generate via "convertch img2xhtml"
-#       ├── styles/         ← opsional custom CSS
-#       │   └── comic.css
-#       └── about.xhtml     ← back-matter (opsional, reflowable)
+#   |-- config.txt
+#   |-- ord.txt             <- opsional: [*|!]path [| alt]
+#   |-- EPUB/
+#       |-- images/
+#       |   |-- cover.jpg   <- WAJIB ada
+#       |   |-- pages/
+#       |       |-- ch1/
+#       |       |   |-- 0001.jpg
+#       |       |-- ch2/
+#       |           |-- 0001.jpg
+#       |-- xhtmls/         <- auto-generate via "convertch img2xhtml"
+#       |-- styles/         <- opsional custom CSS
+#       |-- about.xhtml     <- back-matter (opsional, reflowable)
 #
 #  Alur:
 #    1. Taruh gambar halaman di EPUB/images/pages/
@@ -1662,7 +1618,7 @@ extra_titles:
 `;
 }
 
-// ─── Konversi MD→XHTML (satu file) ──────────────────────────────────
+// ─── Konversi MD->XHTML ──────────────────────────────────────────────
 async function convertOneMdFile(mdFile, outputDir, force = false, marked) {
   const markdownsBase = path.join(process.cwd(), 'Markdowns');
   let relToMarkdowns = '';
@@ -1750,14 +1706,14 @@ async function cmdConvertCh(filePath, force = false, marked) {
     target = path.join(process.cwd(), 'Markdowns');
     if (!fs.existsSync(target)) {
       logI18n('markdowns_not_found', {}, 'error');
-      rl.close();
+      closeRL();
       return;
     }
   } else {
     target = path.resolve(process.cwd(), filePath);
     if (!fs.existsSync(target)) {
       logI18n('path_not_found', { path: target }, 'error');
-      rl.close();
+      closeRL();
       return;
     }
   }
@@ -1769,11 +1725,11 @@ async function cmdConvertCh(filePath, force = false, marked) {
   if (stat.isFile()) {
     if (!target.toLowerCase().endsWith('.md')) {
       logI18n('must_be_md', {}, 'error');
-      rl.close();
+      closeRL();
       return;
     }
     await convertOneMdFile(target, outputDir, force, marked);
-    rl.close();
+    closeRL();
     return;
   }
 
@@ -1781,7 +1737,7 @@ async function cmdConvertCh(filePath, force = false, marked) {
     const mdFiles = walkMdFiles(target);
     if (mdFiles.length === 0) {
       logI18n('no_md_found', {}, 'warn');
-      rl.close();
+      closeRL();
       return;
     }
     logI18n('md_count', { count: mdFiles.length }, 'info');
@@ -1797,7 +1753,7 @@ async function cmdConvertCh(filePath, force = false, marked) {
       const choice = answer.toLowerCase();
       if (choice === 'c') {
         logI18n('convert_cancelled', {}, 'warn');
-        rl.close();
+        closeRL();
         return;
       } else if (choice === 'n') {
         for (const md of mdFiles) {
@@ -1812,7 +1768,7 @@ async function cmdConvertCh(filePath, force = false, marked) {
           }
         }
         logI18n('copy_done', { count: mdFiles.length }, 'info');
-        rl.close();
+        closeRL();
         return;
       } else {
         overwriteAll = true;
@@ -1832,15 +1788,15 @@ async function cmdConvertCh(filePath, force = false, marked) {
       await buildEpub(require('archiver'));
     }
 
-    rl.close();
+    closeRL();
     return;
   }
 
   logI18n('invalid_path', {}, 'error');
-  rl.close();
+  closeRL();
 }
 
-// ─── XHTML→MD ─────────────────────────────────────────────────────────
+// ─── XHTML->MD ─────────────────────────────────────────────────────────
 function convertOneXhtmlFile(xhtmlFile, outputDir, TurndownService) {
   const epubBase = path.join(process.cwd(), 'EPUB');
   let relPath;
@@ -1884,14 +1840,14 @@ async function cmdConvertX(filePath, TurndownService) {
     target = path.join(process.cwd(), 'EPUB');
     if (!fs.existsSync(target)) {
       logI18n('epub_not_found', {}, 'error');
-      rl.close();
+      closeRL();
       return;
     }
   } else {
     target = path.resolve(process.cwd(), filePath);
     if (!fs.existsSync(target)) {
       logI18n('path_not_found', { path: target }, 'error');
-      rl.close();
+      closeRL();
       return;
     }
   }
@@ -1903,17 +1859,17 @@ async function cmdConvertX(filePath, TurndownService) {
   if (stat.isFile()) {
     if (!target.toLowerCase().endsWith('.xhtml')) {
       logI18n('must_be_xhtml', {}, 'error');
-      rl.close();
+      closeRL();
       return;
     }
     const base = path.basename(target).toLowerCase();
     if (['cover.xhtml', 'toc.xhtml', 'nav.xhtml'].includes(base)) {
       logI18n('skip_cover', { file: base }, 'warn');
-      rl.close();
+      closeRL();
       return;
     }
     convertOneXhtmlFile(target, outputDir, TurndownService);
-    rl.close();
+    closeRL();
     return;
   }
 
@@ -1921,7 +1877,7 @@ async function cmdConvertX(filePath, TurndownService) {
     const xhtmlFiles = walkXhtmlFiles(target);
     if (xhtmlFiles.length === 0) {
       logI18n('no_xhtml_found', {}, 'warn');
-      rl.close();
+      closeRL();
       return;
     }
     logI18n('xhtml_count', { count: xhtmlFiles.length }, 'info');
@@ -1936,15 +1892,15 @@ async function cmdConvertX(filePath, TurndownService) {
       }
     }
     logI18n('convertx_summary', { success: successCount, total: xhtmlFiles.length }, 'info');
-    rl.close();
+    closeRL();
     return;
   }
 
   logI18n('invalid_path', {}, 'error');
-  rl.close();
+  closeRL();
 }
 
-// ─── DOCX→MD ───────────────────────────────────────────────────────────
+// ─── DOCX->MD ──────────────────────────────────────────────────────────
 async function cmdDocxToMd(argv) {
   let input = './Docs';
   let output = './Markdowns/fromdocx';
@@ -1971,7 +1927,7 @@ async function cmdDocxToMd(argv) {
   } catch (_) {
     logI18n('missing_dep', { mod: 'mammoth', version: '1.6.0' }, 'error');
     log('Install dengan: npm install mammoth@1.6.0', 'info');
-    rl.close();
+    closeRL();
     return;
   }
 
@@ -1993,18 +1949,18 @@ async function cmdDocxToMd(argv) {
       }
     } else {
       logI18n('invalid_path', { path: inputPath }, 'error');
-      rl.close();
+      closeRL();
       return;
     }
   } else {
     logI18n('path_not_found', { path: inputPath }, 'error');
-    rl.close();
+    closeRL();
     return;
   }
 
   if (docxFiles.length === 0) {
     log(t('docx_no_files'), 'warn');
-    rl.close();
+    closeRL();
     return;
   }
 
@@ -2083,8 +2039,8 @@ async function cmdDocxToMd(argv) {
     }
   }
 
-  log('✅ Selesai.', 'success');
-  rl.close();
+  log('Selesai.', 'success');
+  closeRL();
 }
 
 // ─── split ─────────────────────────────────────────────────────────────
@@ -2106,14 +2062,14 @@ async function cmdSplit(argv) {
 
   if (!inputPath) {
     log(t('split_usage'), 'error');
-    rl.close();
+    closeRL();
     return;
   }
 
   const target = path.resolve(process.cwd(), inputPath);
   if (!fs.existsSync(target)) {
     logI18n('path_not_found', { path: target }, 'error');
-    rl.close();
+    closeRL();
     return;
   }
 
@@ -2126,7 +2082,7 @@ async function cmdSplit(argv) {
   if (stat.isFile()) {
     if (!target.toLowerCase().endsWith('.md')) {
       logI18n('must_be_md', {}, 'error');
-      rl.close();
+      closeRL();
       return;
     }
     mdFiles = [target];
@@ -2134,13 +2090,13 @@ async function cmdSplit(argv) {
     mdFiles = walkMdFiles(target);
   } else {
     logI18n('invalid_path', {}, 'error');
-    rl.close();
+    closeRL();
     return;
   }
 
   if (mdFiles.length === 0) {
     logI18n('no_md_found', {}, 'warn');
-    rl.close();
+    closeRL();
     return;
   }
 
@@ -2191,7 +2147,7 @@ async function cmdSplit(argv) {
   }
 
   logI18n('split_summary', { success: successCount, total: mdFiles.length }, 'info');
-  rl.close();
+  closeRL();
 }
 
 // ─── merge ─────────────────────────────────────────────────────────────
@@ -2213,14 +2169,14 @@ async function cmdMerge(argv) {
 
   if (!inputPath) {
     logI18n('merge_usage', {}, 'error');
-    rl.close();
+    closeRL();
     return;
   }
 
   const target = path.resolve(process.cwd(), inputPath);
   if (!fs.existsSync(target)) {
     logI18n('path_not_found', { path: target }, 'error');
-    rl.close();
+    closeRL();
     return;
   }
 
@@ -2229,7 +2185,7 @@ async function cmdMerge(argv) {
   if (stat.isFile()) {
     if (!target.toLowerCase().endsWith('.md')) {
       logI18n('must_be_md', {}, 'error');
-      rl.close();
+      closeRL();
       return;
     }
     mdFiles = [target];
@@ -2237,13 +2193,13 @@ async function cmdMerge(argv) {
     mdFiles = walkMdFiles(target);
   } else {
     logI18n('invalid_path', {}, 'error');
-    rl.close();
+    closeRL();
     return;
   }
 
   if (mdFiles.length === 0) {
     logI18n('merge_no_files', { path: target }, 'warn');
-    rl.close();
+    closeRL();
     return;
   }
 
@@ -2256,7 +2212,7 @@ async function cmdMerge(argv) {
     const ans = await question(t('file_exists', { file: path.basename(outPath) }));
     if (ans.toLowerCase() !== 'y') {
       logI18n('cancelled', {}, 'warn');
-      rl.close();
+      closeRL();
       return;
     }
   }
@@ -2272,7 +2228,7 @@ async function cmdMerge(argv) {
   logI18n('merge_created', { file: outPath }, 'success');
   logI18n('merge_summary', { count: mdFiles.length, output: path.basename(outPath) }, 'info');
 
-  rl.close();
+  closeRL();
 }
 
 // ─── Build core ────────────────────────────────────────────────────────
@@ -2430,7 +2386,6 @@ async function buildComicEpub(archiver, config, epubDir, type) {
 
   logI18n('comic_mode', { type, direction, spread }, 'info');
 
-  // Collect CSS + auto-sync XHTML
   const cssRelPaths = collectCssFiles(epubDir, config);
   if (cssRelPaths.length > 0) {
     logI18n('comic_css_found', { list: cssRelPaths.join(', ') }, 'info');
@@ -2439,7 +2394,6 @@ async function buildComicEpub(archiver, config, epubDir, type) {
   logI18n('comic_syncing', {}, 'info');
   await syncXhtmlFromImages(epubDir, { silent: true, force: false, fitMode, cssRelPaths });
 
-  // Collect pages
   const pages = collectComicPages(epubDir, ordPath);
   if (pages.length === 0) {
     logI18n('comic_xhtmls_missing', {}, 'error');
@@ -2447,7 +2401,6 @@ async function buildComicEpub(archiver, config, epubDir, type) {
   }
   logI18n('comic_pages_found', { count: pages.length }, 'info');
 
-  // Media
   const media = collectMediaComic(epubDir);
   if (!media.cover) {
     logI18n('cover_missing', {}, 'warn');
@@ -2456,10 +2409,8 @@ async function buildComicEpub(archiver, config, epubDir, type) {
   }
   logI18n('media_summary', { images: media.pages.length + media.illustrations.length, audio: media.audio.length }, 'info');
 
-  // Back-matter
   const backMatter = collectBackMatter(epubDir);
 
-  // FIX: pakai toggle sisi baca, reset setelah center spread
   const chapters = [];
   let currentSide = (direction === 'rtl') ? 'right' : 'left';
   for (let i = 0; i < pages.length; i++) {
@@ -2483,15 +2434,12 @@ async function buildComicEpub(archiver, config, epubDir, type) {
       }
     }
 
-    // Toggle sisi untuk halaman single berikutnya
     if (isCenter) {
-      // reset: setelah double-spread, halaman berikutnya dianggap start lagi
       currentSide = (direction === 'rtl') ? 'right' : 'left';
     } else {
       currentSide = currentSide === 'left' ? 'right' : 'left';
     }
 
-    // FIX: title fallback — kalau <title> cuma "Page" (generic), pakai "Page N"
     let title = p.alt;
     if (!title) {
       const xhtmlPath = path.join(epubDir, 'xhtmls', p.relPath);
@@ -2514,13 +2462,11 @@ async function buildComicEpub(archiver, config, epubDir, type) {
     });
   }
 
-  // Builds dir
   const buildsDir = path.join(cwd, 'builds');
   ensureDir(buildsDir);
   const epubFilename = `${rootName}.epub`;
   const epubPath = path.join(buildsDir, epubFilename);
 
-  // Cover dimensions
   let coverSize = null;
   if (media.cover) {
     coverSize = getImageSize(path.join(epubDir, 'images', media.cover));
@@ -2577,7 +2523,6 @@ async function buildComicEpub(archiver, config, epubDir, type) {
     archive.append(tocContent, { name: 'EPUB/toc.xhtml' });
     archive.append(coverContent, { name: 'EPUB/cover.xhtml' });
 
-    // Add xhtmls/
     const xhtmlsDir = path.join(epubDir, 'xhtmls');
     if (fs.existsSync(xhtmlsDir)) {
       const xhtmls = walkFilesRecursive(xhtmlsDir, (p) => p.toLowerCase().endsWith('.xhtml'));
@@ -2587,7 +2532,6 @@ async function buildComicEpub(archiver, config, epubDir, type) {
       }
     }
 
-    // Add images/ (recursive, including pages/)
     const imagesDir = path.join(epubDir, 'images');
     if (fs.existsSync(imagesDir)) {
       const imgs = walkFilesRecursive(imagesDir, isImageFile);
@@ -2597,7 +2541,6 @@ async function buildComicEpub(archiver, config, epubDir, type) {
       }
     }
 
-    // Add styles/ (CSS custom)
     const stylesDir = path.join(epubDir, 'styles');
     if (fs.existsSync(stylesDir)) {
       const cssFiles = walkFilesRecursive(stylesDir, isCssFile);
@@ -2607,7 +2550,6 @@ async function buildComicEpub(archiver, config, epubDir, type) {
       }
     }
 
-    // Add audiovideo/
     const audioDir = path.join(epubDir, 'audiovideo');
     if (fs.existsSync(audioDir)) {
       const files = walkFilesRecursive(audioDir, () => true);
@@ -2617,7 +2559,6 @@ async function buildComicEpub(archiver, config, epubDir, type) {
       }
     }
 
-    // Add back-matter XHTML (exclude nav/toc/cover yang sudah punya versi generated)
     const excludeRoot = ['cover.xhtml', 'toc.xhtml', 'nav.xhtml', 'volume.opf'];
     const allEpubFiles = fs.readdirSync(epubDir);
     for (const item of allEpubFiles) {
@@ -2981,24 +2922,24 @@ function generateOpf(config, chapters, media, options) {
   const titles = [mainTitle || 'Untitled'];
   if (subTitle) titles.push(subTitle);
   if (volume) titles.push(volume);
-  for (const t of extraTitles) {
-    if (t.trim()) titles.push(t.trim());
+  for (const tt of extraTitles) {
+    if (tt.trim()) titles.push(tt.trim());
   }
-  for (const t of titles) {
-    metadata.push(`<dc:title>${escapeXml(t)}</dc:title>`);
+  for (const tt of titles) {
+    metadata.push(`<dc:title>${escapeXml(tt)}</dc:title>`);
   }
 
   if (creator) {
     metadata.push(`<dc:creator id="creator">${escapeXml(creator)}</dc:creator>`);
   }
 
-  for (const c of contributors) {
-    const role = c.role || 'ctb';
+  for (const cc of contributors) {
+    const role = cc.role || 'ctb';
     if (role === 'aut' && !creator) {
-      metadata.push(`<dc:creator id="creator">${escapeXml(c.name)}</dc:creator>`);
+      metadata.push(`<dc:creator id="creator">${escapeXml(cc.name)}</dc:creator>`);
     } else {
       const roleLabel = role === 'aut' ? 'author' : (role === 'edt' ? 'editor' : role);
-      metadata.push(`<dc:contributor>${escapeXml(c.name)} (${roleLabel})</dc:contributor>`);
+      metadata.push(`<dc:contributor>${escapeXml(cc.name)} (${roleLabel})</dc:contributor>`);
     }
   }
 
@@ -3048,7 +2989,6 @@ function generateOpf(config, chapters, media, options) {
   const manifest = [];
   const spine = [];
 
-  // Cover image
   let coverImgRel = null;
   if (media.cover) {
     coverImgRel = `images/${media.cover}`;
@@ -3058,7 +2998,6 @@ function generateOpf(config, chapters, media, options) {
     logI18n('cover_missing', {}, 'warn');
   }
 
-  // Cover XHTML
   manifest.push(`<item id="cover-xhtml" href="cover.xhtml" media-type="application/xhtml+xml"/>`);
   if (isComic) {
     spine.push(`<itemref idref="cover-xhtml" linear="yes" properties="page-spread-center"/>`);
@@ -3066,11 +3005,9 @@ function generateOpf(config, chapters, media, options) {
     spine.push(`<itemref idref="cover-xhtml" linear="yes"/>`);
   }
 
-  // TOC
   manifest.push(`<item id="toc" href="toc.xhtml" media-type="application/xhtml+xml" properties="nav"/>`);
   spine.push(`<itemref idref="toc" linear="no"/>`);
 
-  // Chapter/page XHTML
   for (let i = 0; i < chapters.length; i++) {
     const ch = chapters[i];
     const id = isComic ? `page_${i}` : `chap_${i}`;
@@ -3083,11 +3020,9 @@ function generateOpf(config, chapters, media, options) {
     }
   }
 
-  // Back-matter XHTML (comic mode)
   if (isComic) {
     for (let i = 0; i < backMatter.length; i++) {
       const bm = backMatter[i];
-      // FIX: skip nav/toc yang kadang masih lolos di backMatter
       const bmBase = path.basename(bm.path).toLowerCase();
       if (['nav.xhtml', 'toc.xhtml', 'cover.xhtml'].includes(bmBase)) continue;
       const id = `back_${i}`;
@@ -3096,22 +3031,18 @@ function generateOpf(config, chapters, media, options) {
     }
   }
 
-  // CSS files
   for (let i = 0; i < cssRelPaths.length; i++) {
     const cssRel = cssRelPaths[i];
     manifest.push(`<item id="css_${i}" href="${escapeXml(cssRel)}" media-type="text/css"/>`);
   }
 
-  // Images (illustrations for textbook, illustrations + pages for comic)
   if (isComic) {
-    // illustrations (images/* non-pages non-cover)
     for (let i = 0; i < media.illustrations.length; i++) {
       const img = media.illustrations[i];
       const id = `img_${i}_${String(img).replace(/[^a-zA-Z0-9]/g, '_')}`;
       const href = `images/${img}`;
       manifest.push(`<item id="${id}" href="${escapeXml(href)}" media-type="${getMimeType(img)}"/>`);
     }
-    // pages (images/pages/**/*) — FIX: pakai index unik biar gak collision
     for (let i = 0; i < media.pages.length; i++) {
       const norm = epubPathToPosix(media.pages[i]);
       const id = `pimg_${i}_${norm.replace(/[^a-zA-Z0-9]/g, '_')}`;
@@ -3127,7 +3058,6 @@ function generateOpf(config, chapters, media, options) {
     }
   }
 
-  // Audio/video
   for (let i = 0; i < media.audio.length; i++) {
     const av = media.audio[i];
     const id = `av_${i}_${String(av).replace(/[^a-zA-Z0-9]/g, '_')}`;
@@ -3182,7 +3112,6 @@ function generateToc(chapters, options = {}) {
 `;
   }
 
-  // Comic/manga TOC: nested by chapter if applicable
   const chapterMap = options.chapterTitles || {};
   const grouped = new Map();
   let hasChapters = false;
@@ -3298,7 +3227,6 @@ function generateCoverXhtml(coverFilename, coverSize, options = {}) {
 `;
   }
 
-  // Textbook: legacy style
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:xlink="http://www.w3.org/1999/xlink" xml:lang="id" lang="id">
@@ -3343,14 +3271,14 @@ async function cmdImport(argv) {
     AdmZip = require('adm-zip');
   } catch (_) {
     logI18n('missing_dep', { mod: 'adm-zip', version: '0.5.10' }, 'error');
-    rl.close();
+    closeRL();
     return;
   }
   try {
     xml2js = require('xml2js');
   } catch (_) {
     logI18n('missing_dep', { mod: 'xml2js', version: '0.5.0' }, 'error');
-    rl.close();
+    closeRL();
     return;
   }
 
@@ -3358,7 +3286,7 @@ async function cmdImport(argv) {
   const files = fs.readdirSync(cwd).filter(f => f.endsWith('.epub'));
   if (files.length === 0) {
     logI18n('import_no_epub', {}, 'error');
-    rl.close();
+    closeRL();
     return;
   }
 
@@ -3370,7 +3298,7 @@ async function cmdImport(argv) {
     const idx = parseInt(answer.trim());
     if (isNaN(idx) || idx < 1 || idx > files.length) {
       logI18n('import_invalid_choice', {}, 'error');
-      rl.close();
+      closeRL();
       return;
     }
     selectedFile = files[idx - 1];
@@ -3384,8 +3312,8 @@ async function cmdImport(argv) {
 
   const containerEntry = zipEntries.find(e => e.entryName === 'META-INF/container.xml');
   if (!containerEntry) {
-    console.error('❌ META-INF/container.xml tidak ditemukan dalam EPUB.');
-    rl.close();
+    console.error('META-INF/container.xml tidak ditemukan dalam EPUB.');
+    closeRL();
     return;
   }
   const containerXml = containerEntry.getData().toString('utf8');
@@ -3397,15 +3325,15 @@ async function cmdImport(argv) {
     if (rootfile) opfPath = rootfile;
   } catch (_) {}
   if (!opfPath) {
-    console.error('❌ Gagal membaca path OPF dari container.xml.');
-    rl.close();
+    console.error('Gagal membaca path OPF dari container.xml.');
+    closeRL();
     return;
   }
 
   const opfEntry = zipEntries.find(e => e.entryName === opfPath);
   if (!opfEntry) {
-    console.error(`❌ OPF tidak ditemukan: ${opfPath}`);
-    rl.close();
+    console.error(`OPF tidak ditemukan: ${opfPath}`);
+    closeRL();
     return;
   }
   const opfXml = opfEntry.getData().toString('utf8');
@@ -3413,24 +3341,24 @@ async function cmdImport(argv) {
   try {
     opfParsed = await parser.parseStringPromise(opfXml);
   } catch (_) {
-    console.error('❌ Gagal parsing OPF.');
-    rl.close();
+    console.error('Gagal parsing OPF.');
+    closeRL();
     return;
   }
 
   const opfDir = path.posix.dirname(opfPath);
   const metadata = opfParsed.package?.metadata?.[0] || {};
   const dc = metadata['dc:title'] || [];
-  const titles = dc.map(t => t._ || t).filter(Boolean);
+  const titles = dc.map(tt => tt._ || tt).filter(Boolean);
   const mainTitle = titles[0] || '';
   const extraTitles = titles.slice(1);
 
   const creators = metadata['dc:creator'] || [];
   let author = '';
   let contributors = [];
-  for (const c of creators) {
-    const name = c._ || c;
-    const role = c.$?.id === 'creator' ? 'aut' : 'ctb';
+  for (const cc of creators) {
+    const name = cc._ || cc;
+    const role = cc.$?.id === 'creator' ? 'aut' : 'ctb';
     if (role === 'aut' && !author) author = name;
     else contributors.push({ name, role });
   }
@@ -3492,7 +3420,6 @@ async function cmdImport(argv) {
     return zipEntries.find(e => e.entryName === epubInternal);
   }
 
-  // ─── Extract cover ─────────────────────────────────────────────────
   let coverFound = false;
   let coverExt = null;
   for (const id in manifestMap) {
@@ -3547,7 +3474,6 @@ async function cmdImport(argv) {
   let pageCounter = 0;
 
   if (isComicImport) {
-    // ─── Comic import: extract page images by spine order ────────────
     const pagesTarget = path.join(imagesTarget, 'pages');
     ensureDir(pagesTarget);
 
@@ -3565,13 +3491,11 @@ async function cmdImport(argv) {
       const item = manifestMap[idref];
       if (!item) continue;
 
-      // FIX: skip nav/toc/cover/titlepage pakai basename match
       const baseNameLower = path.basename(item.href).toLowerCase();
       if (['nav.xhtml', 'toc.xhtml', 'cover.xhtml', 'titlepage.xhtml'].includes(baseNameLower)) continue;
       if (item.href === coverHref) continue;
 
       if (item.properties && item.properties.includes('rendition:layout-reflowable')) {
-        // Back-matter: extract as-is
         const entry = findZipEntryByHref(item.href);
         if (entry) {
           const dest = path.join(epubTarget, path.basename(item.href));
@@ -3583,17 +3507,14 @@ async function cmdImport(argv) {
         continue;
       }
 
-      // Regular page: parse xhtml, find img, extract image
       const entry = findZipEntryByHref(item.href);
       if (!entry) continue;
       const xhtmlContent = entry.getData().toString('utf8');
 
-      // FIX: kalau ini halaman nav/toc (tidak ada <img> tapi ada <nav>), skip
       if (/<nav\b[^>]*epub:type=["']toc["']/i.test(xhtmlContent)) continue;
 
       const imgMatch = xhtmlContent.match(/<img[^>]+src=["']([^"']+)["']/i);
       if (!imgMatch) {
-        // Could be a text-only page or back-matter — save as back-matter
         const dest = path.join(epubTarget, path.basename(item.href));
         if (!fs.existsSync(dest) || force) {
           fs.writeFileSync(dest, entry.getData());
@@ -3606,7 +3527,6 @@ async function cmdImport(argv) {
       const altMatch = xhtmlContent.match(/<img[^>]+alt=["']([^"']*)["']/i);
       const alt = altMatch ? altMatch[1] : '';
 
-      // Resolve image path relative to xhtml
       const xhtmlDir = path.posix.dirname(resolveHref(item.href));
       const resolvedImg = path.posix.normalize(path.posix.join(xhtmlDir, imgHref));
       const imgEntry = zipEntries.find(e => e.entryName === resolvedImg);
@@ -3635,10 +3555,8 @@ async function cmdImport(argv) {
 
     logI18n('import_comic_pages', { count: pageCounter }, 'info');
 
-    // Generate XHTMLs from images
     await syncXhtmlFromImages(epubTarget, { silent: true, force: false });
 
-    // Extract audio/video
     for (const id in manifestMap) {
       const item = manifestMap[id];
       if (!item.mediaType) continue;
@@ -3656,7 +3574,6 @@ async function cmdImport(argv) {
       }
     }
 
-    // Write config.txt
     const configPath = path.join(outputDir, 'config.txt');
     const type = pageProgression === 'rtl' ? 'manga' : 'comic';
     const configContent = buildImportComicConfig({
@@ -3677,7 +3594,6 @@ async function cmdImport(argv) {
       logI18n('created', { file: configPath }, 'success');
     }
 
-    // Write ord.txt
     const ordPath = path.join(outputDir, 'ord.txt');
     if (fs.existsSync(ordPath) && !force) {
       const ans = await question(t('file_exists', { file: 'ord.txt' }));
@@ -3699,11 +3615,9 @@ async function cmdImport(argv) {
       audio: audioFiles.length,
     }, 'info');
 
-    rl.close();
+    closeRL();
     return;
   }
-
-  // ─── Textbook import (legacy) ──────────────────────────────────────
 
   function copyZipEntry(entryName, destPath, overwrite = false) {
     const entry = zipEntries.find(e => e.entryName === entryName);
@@ -3801,12 +3715,12 @@ async function cmdImport(argv) {
   }, 'info');
   logI18n('import_hint', {}, 'info');
 
-  rl.close();
+  closeRL();
 }
 
 function buildImportTextbookConfig(d) {
   return `# ============================================================
-#  METADATA BUKU  —  diedit dari hasil impor
+#  METADATA BUKU  -  diedit dari hasil impor
 # ============================================================
 
 type: textbook
@@ -3823,11 +3737,11 @@ description: ${d.description}
 subjects: ${d.subjects.join(', ')}
 series_name: ${d.seriesName}
 series_number: ${d.seriesNumber}
-contributors: ${d.contributors.map(c => `${c.name}|${c.role}`).join(', ')}
+contributors: ${d.contributors.map(cc => `${cc.name}|${cc.role}`).join(', ')}
 extra_titles: ${d.extraTitles.join(', ')}
 
 # ============================================================
-#  KONVERSI DOCX → MARKDOWN (opsional)
+#  KONVERSI DOCX -> MARKDOWN (opsional)
 # ============================================================
 # [docx-mapping]
 # heading1 = 24
@@ -3838,7 +3752,7 @@ extra_titles: ${d.extraTitles.join(', ')}
 
 function buildImportComicConfig(d) {
   return `# ============================================================
-#  METADATA BUKU  —  diedit dari hasil impor
+#  METADATA BUKU  -  diedit dari hasil impor
 # ============================================================
 
 type: ${d.type}
@@ -3859,7 +3773,7 @@ description: ${d.description}
 subjects: ${d.subjects.join(', ')}
 series_name: ${d.seriesName}
 series_number: ${d.seriesNumber}
-contributors: ${d.contributors.map(c => `${c.name}|${c.role}`).join(', ')}
+contributors: ${d.contributors.map(cc => `${cc.name}|${cc.role}`).join(', ')}
 extra_titles: ${d.extraTitles.join(', ')}
 
 # ============================================================
@@ -3879,7 +3793,7 @@ async function cmdUpdateModule(force = false) {
     const ans = await question(t('update_confirm'));
     if (ans.toLowerCase() !== 'y') {
       logI18n('cancelled', {}, 'warn');
-      rl.close();
+      closeRL();
       return;
     }
   } else if (fs.existsSync(nodeModulesDir) && force) {
@@ -3893,7 +3807,7 @@ async function cmdUpdateModule(force = false) {
   } catch (err) {
     logI18n('extract_failed', { error: err.message }, 'error');
   }
-  rl.close();
+  closeRL();
 }
 
 // ─── Command: updateconfig ─────────────────────────────────────────────
@@ -3903,7 +3817,7 @@ async function cmdUpdateConfig(force = false) {
     const ans = await question(t('updateconfig_confirm'));
     if (ans.toLowerCase() !== 'y') {
       logI18n('cancelled', {}, 'warn');
-      rl.close();
+      closeRL();
       return;
     }
   } else if (fs.existsSync(configDir) && force) {
@@ -3917,7 +3831,7 @@ async function cmdUpdateConfig(force = false) {
   } catch (err) {
     logI18n('updateconfig_failed', { error: err.message }, 'error');
   }
-  rl.close();
+  closeRL();
 }
 
 // ─── Command: settings ─────────────────────────────────────────────────
@@ -3926,7 +3840,7 @@ async function cmdSettings() {
   const settings = loadSettings();
 
   console.log(t('settings_title'));
-  const keys = ['lang', 'watch_delay', 'auto_build', 'overwrite_policy', 'default_type'];
+  const keys = ['watch_delay', 'auto_build', 'overwrite_policy', 'default_type'];
   const current = {};
   for (const k of keys) {
     current[k] = settings[k] || '';
@@ -3948,14 +3862,11 @@ async function cmdSettings() {
     }
     if (answer.trim().toLowerCase() === 'cancel') {
       logI18n('settings_cancelled', {}, 'warn');
-      rl.close();
+      closeRL();
       return;
     }
     if (answer.trim() !== '') {
-      if (k === 'lang' && !['id', 'en'].includes(answer.trim())) {
-        logI18n('settings_invalid_value', {}, 'warn');
-        newSettings[k] = current[k];
-      } else if (k === 'watch_delay' && isNaN(parseInt(answer.trim()))) {
+      if (k === 'watch_delay' && isNaN(parseInt(answer.trim()))) {
         logI18n('settings_invalid_value', {}, 'warn');
         newSettings[k] = current[k];
       } else if (k === 'auto_build' && !['true', 'false'].includes(answer.trim().toLowerCase())) {
@@ -3980,10 +3891,7 @@ async function cmdSettings() {
   fs.writeFileSync(settingsPath, content, 'utf8');
   logI18n('settings_saved', { file: settingsPath }, 'success');
 
-  currentLang = newSettings.lang || 'en';
-  loadLanguageFile(currentLang);
-
-  rl.close();
+  closeRL();
 }
 
 // ─── Command: validate ─────────────────────────────────────────────────
@@ -3991,13 +3899,13 @@ async function cmdValidate() {
   const buildsDir = path.join(process.cwd(), 'builds');
   if (!fs.existsSync(buildsDir)) {
     logI18n('validate_no_epub', {}, 'error');
-    rl.close();
+    closeRL();
     return;
   }
   const files = fs.readdirSync(buildsDir).filter(f => f.endsWith('.epub'));
   if (files.length === 0) {
     logI18n('validate_no_epub', {}, 'error');
-    rl.close();
+    closeRL();
     return;
   }
   const latest = files.sort().pop();
@@ -4012,14 +3920,120 @@ async function cmdValidate() {
   } catch (err) {
     logI18n('validate_fail', { output: err.stdout || err.message }, 'error');
   }
-  rl.close();
+  closeRL();
+}
+
+// ─── Help ──────────────────────────────────────────────────────────────
+function printHelp() {
+  console.log('');
+  console.log(t('help_title', { version: VERSION }));
+  console.log(t('help_commands'));
+  console.log(t('help_structure'));
+  console.log(t('help_deps'));
+  console.log('');
+}
+
+// ─── Menu ──────────────────────────────────────────────────────────────
+function printMenu() {
+  const line = c.gray + '-'.repeat(52) + c.reset;
+  console.log('');
+  console.log(`  ${c.bold}epubcreator${c.reset} ${c.gray}v${VERSION}${c.reset}  ${c.gray}--${c.reset}  EPUB builder`);
+  console.log(`  ${line}`);
+  console.log('');
+  console.log(`  ${c.bold}${c.cyan}CREATE NEW BOOK${c.reset}`);
+  console.log(`    ${c.bold}1${c.reset}  Textbook`);
+  console.log(`    ${c.bold}2${c.reset}  Comic (LTR)`);
+  console.log(`    ${c.bold}3${c.reset}  Manga (RTL)`);
+  console.log('');
+  console.log(`  ${c.bold}${c.cyan}CONVERSION${c.reset}`);
+  console.log(`    ${c.bold}4${c.reset}  Markdown -> XHTML`);
+  console.log(`    ${c.bold}5${c.reset}  XHTML -> Markdown`);
+  console.log(`    ${c.bold}6${c.reset}  DOCX -> Markdown`);
+  console.log(`    ${c.bold}7${c.reset}  Images -> XHTML (comic/manga)`);
+  console.log(`    ${c.bold}8${c.reset}  Split Markdown`);
+  console.log(`    ${c.bold}9${c.reset}  Merge Markdown`);
+  console.log('');
+  console.log(`  ${c.bold}${c.cyan}BUILD & MANAGE${c.reset}`);
+  console.log(`    ${c.bold}b${c.reset}  Build EPUB`);
+  console.log(`    ${c.bold}d${c.reset}  Debug (auto-rebuild)`);
+  console.log(`    ${c.bold}v${c.reset}  Validate`);
+  console.log(`    ${c.bold}i${c.reset}  Import EPUB`);
+  console.log(`    ${c.bold}s${c.reset}  Settings`);
+  console.log(`    ${c.bold}u${c.reset}  Update module`);
+  console.log(`    ${c.bold}c${c.reset}  Update config`);
+  console.log('');
+  console.log(`    ${c.bold}h${c.reset}  Help      ${c.bold}q${c.reset}  Quit`);
+  console.log('');
+}
+
+async function handleMenuChoice(choice, deps) {
+  const { archiver, marked, TurndownService } = deps;
+
+  switch (choice) {
+    case '1': await cmdCreateDir(['textbook']); break;
+    case '2': await cmdCreateDir(['comic']); break;
+    case '3': await cmdCreateDir(['manga']); break;
+    case '4': await cmdConvertCh(null, false, marked); break;
+    case '5': await cmdConvertX(null, TurndownService); break;
+    case '6': await cmdDocxToMd([]); break;
+    case '7': await cmdImg2Xhtml([]); break;
+    case '8': {
+      const p = await question(`  ${c.gray}Path to .md file or directory [Markdowns]:${c.reset} `);
+      const target = p.trim() || 'Markdowns';
+      await cmdSplit([target]);
+      break;
+    }
+    case '9': {
+      const p = await question(`  ${c.gray}Path to .md file or directory [Markdowns]:${c.reset} `);
+      const target = p.trim() || 'Markdowns';
+      await cmdMerge([target]);
+      break;
+    }
+    case 'b': await cmdBuild(archiver); break;
+    case 'd': await cmdDebug(archiver, marked); break;
+    case 'v': await cmdValidate(); break;
+    case 'i': await cmdImport([]); break;
+    case 's': await cmdSettings(); break;
+    case 'u': await cmdUpdateModule(false); break;
+    case 'c': await cmdUpdateConfig(false); break;
+    case 'h': printHelp(); break;
+    default:
+      log(`Unknown option: "${choice}". Type "h" for help.`, 'warn');
+  }
+}
+
+async function runMenu(deps) {
+  while (true) {
+    printMenu();
+    const answer = await question(`  ${c.cyan}>${c.reset} `);
+    const choice = answer.trim().toLowerCase();
+
+    if (!choice) continue;
+    if (choice === 'q' || choice === 'quit' || choice === 'exit') {
+      console.log(`\n  ${c.gray}Bye.${c.reset}\n`);
+      return;
+    }
+
+    console.log('');
+    try {
+      await handleMenuChoice(choice, deps);
+    } catch (err) {
+      log(`Error: ${err.message}`, 'error');
+    }
+
+    // Debug adalah blocking (sampai Ctrl+C → exit).
+    if (choice === 'd') {
+      return;
+    }
+
+    console.log('');
+    await pauseBeforeMenu(3);
+  }
 }
 
 // ─── Main ──────────────────────────────────────────────────────────────
 async function main() {
   const settings = loadSettings();
-  currentLang = settings.lang || 'en';
-  loadLanguageFile(currentLang);
 
   const args = process.argv.slice(2);
   const command = args[0];
@@ -4029,16 +4043,27 @@ async function main() {
     rl.close();
     return;
   }
-  if (!command || command === 'help' || command === '--help') {
-    console.log(t('help_title', { version: VERSION }));
-    console.log(t('help_commands'));
-    console.log(t('help_structure'));
-    console.log(t('help_deps'));
+  if (command === 'help' || command === '--help') {
+    printHelp();
     rl.close();
     return;
   }
 
-  // Perintah tanpa dependensi
+  // ─── Tanpa argumen → menu interaktif ──────────────────────────────
+  if (!command) {
+    interactiveMode = true;
+    let deps;
+    try {
+      deps = checkDependencies();
+    } catch (_) {
+      process.exit(1);
+    }
+    await runMenu(deps);
+    rl.close();
+    return;
+  }
+
+  // ─── Perintah tanpa dependensi (non-interaktif) ──────────────────
   if (command === 'createdir') {
     await cmdCreateDir(args.slice(1));
     return;
@@ -4066,7 +4091,7 @@ async function main() {
     return;
   }
 
-  // Perintah dengan dependensi
+  // ─── Perintah dengan dependensi ──────────────────────────────────
   let deps;
   try {
     deps = checkDependencies();
@@ -4075,7 +4100,6 @@ async function main() {
   }
   const { archiver, marked, TurndownService } = deps;
 
-  // convertch / conv
   if (command === 'convertch' || command === 'conv') {
     const sub = args[1] || 'md2xhtml';
     const rest = args.slice(2);
@@ -4132,10 +4156,10 @@ async function main() {
 
 async function cmdBuild(archiver) {
   await buildEpub(archiver);
-  rl.close();
+  closeRL();
 }
 
 main().catch((err) => {
-  console.error('❌ Error:', err.message);
+  console.error(`${c.red}[!!]${c.reset} Error: ${err.message}`);
   rl.close();
 });
