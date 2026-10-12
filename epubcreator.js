@@ -376,6 +376,472 @@ function logI18n(key, params = {}, type = 'info') {
   log(t(key, params), type);
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  TUI  (full-screen interactive menu, alternate-screen buffer)
+// ═══════════════════════════════════════════════════════════════════════
+
+// Save original console methods so we can bypass the TUI redirect.
+const _origConsoleLog = console.log.bind(console);
+const _origConsoleError = console.error.bind(console);
+
+// Strip ANSI escape codes to compute "visible length" of a line.
+function stripAnsi(s) {
+  return String(s).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+}
+
+// Menu structure — rendered in 3 columns per section.
+const MENU_DEF = [
+  {
+    section: 'CREATE',
+    items: [
+      { key: '1', label: 'Textbook' },
+      { key: '2', label: 'Comic LTR' },
+      { key: '3', label: 'Manga RTL' },
+    ],
+  },
+  {
+    section: 'CONVERT',
+    items: [
+      { key: '4', label: 'MD>XHTML' },
+      { key: '5', label: 'XHTML>MD' },
+      { key: '6', label: 'DOCX>MD' },
+      { key: '7', label: 'IMG>XHTML' },
+      { key: '8', label: 'Split MD' },
+      { key: '9', label: 'Merge MD' },
+    ],
+  },
+  {
+    section: 'BUILD & MANAGE',
+    items: [
+      { key: 'b', label: 'Build EPUB' },
+      { key: 'd', label: 'Debug' },
+      { key: 'v', label: 'Validate' },
+      { key: 'i', label: 'Import' },
+      { key: 's', label: 'Settings' },
+      { key: 'u', label: 'Upd modules' },
+      { key: 'c', label: 'Upd config' },
+    ],
+  },
+];
+
+const TUI = {
+  active: false,
+  suspended: false,
+  executing: false,
+  cols: 80,
+  rows: 24,
+  logs: [],
+  maxLogs: 2000,
+  scrollOffset: 0,
+  selected: 0,
+  menu: [],
+  deps: null,
+  promptState: null,
+  onExit: null,
+  _dataHandler: null,
+  _resizeHandler: null,
+
+  canUse() {
+    if (!process.stdout.isTTY) return false;
+    if (!process.stdin.isTTY) return false;
+    if (process.env.NO_TUI) return false;
+    if ((process.stdout.columns || 80) < 60) return false;
+    if ((process.stdout.rows || 24) < 20) return false;
+    return true;
+  },
+
+  init(deps) {
+    this.deps = deps;
+    this.cols = process.stdout.columns || 80;
+    this.rows = process.stdout.rows || 24;
+    this.menu = [];
+    for (const sec of MENU_DEF) {
+      for (const item of sec.items) this.menu.push(item);
+    }
+    this.logs = [
+      `${c.bold}epubcreator${c.reset} ${c.gray}v${VERSION}${c.reset}`,
+      `${c.gray}Arrow keys to navigate, Enter to select, q to quit.${c.reset}`,
+      '',
+    ];
+  },
+
+  enter() {
+    if (!this.canUse()) return false;
+    this.active = true;
+
+    try { rl.close(); } catch (_) {}
+
+    process.stdout.write('\x1b[?1049h');   // alt screen
+    process.stdout.write('\x1b[?25l');     // hide cursor
+    process.stdout.write('\x1b[H\x1b[2J');
+
+    try { process.stdin.setRawMode(true); } catch (_) {}
+    process.stdin.resume();
+
+    this._dataHandler = (chunk) => this.handleInput(chunk);
+    process.stdin.on('data', this._dataHandler);
+
+    this._resizeHandler = () => {
+      this.cols = process.stdout.columns || 80;
+      this.rows = process.stdout.rows || 24;
+      this.render();
+    };
+    process.stdout.on('resize', this._resizeHandler);
+
+    this.render();
+    return true;
+  },
+
+  exit() {
+    if (!this.active) return;
+    this.active = false;
+
+    if (this._dataHandler) {
+      process.stdin.removeListener('data', this._dataHandler);
+      this._dataHandler = null;
+    }
+    if (this._resizeHandler) {
+      process.stdout.removeListener('resize', this._resizeHandler);
+      this._resizeHandler = null;
+    }
+
+    try { process.stdin.setRawMode(false); } catch (_) {}
+    process.stdout.write('\x1b[?25h');     // show cursor
+    process.stdout.write('\x1b[?1049l');   // leave alt screen
+
+    if (this.onExit) this.onExit();
+  },
+
+  suspend() {
+    if (!this.active || this.suspended) return;
+    this.suspended = true;
+
+    try { process.stdin.setRawMode(false); } catch (_) {}
+    process.stdout.write('\x1b[?25h');
+    process.stdout.write('\x1b[?1049l');
+
+    try { rl.close(); } catch (_) {}
+    rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  },
+
+  resume() {
+    if (!this.active || !this.suspended) return;
+    this.suspended = false;
+
+    try { rl.close(); } catch (_) {}
+
+    process.stdout.write('\x1b[?1049h');
+    process.stdout.write('\x1b[?25l');
+    process.stdout.write('\x1b[H\x1b[2J');
+    try { process.stdin.setRawMode(true); } catch (_) {}
+    this.render();
+  },
+
+  pushLog(text) {
+    const lines = String(text).split('\n');
+    for (const line of lines) this.logs.push(line);
+    if (this.logs.length > this.maxLogs) {
+      this.logs = this.logs.slice(-this.maxLogs);
+    }
+    if (!this.suspended) this.render();
+  },
+
+  render() {
+    if (!this.active || this.suspended) return;
+
+    const menuLines = this.buildMenuLines();
+    const menuHeight = menuLines.length;
+    const logHeight = Math.max(1, this.rows - menuHeight - 1);
+    const visibleLogs = this.getVisibleLogs(logHeight);
+
+    let out = '\x1b[H';
+
+    for (let i = 0; i < logHeight; i++) {
+      out += this.padLine(visibleLogs[i] || '', this.cols) + '\x1b[K\n';
+    }
+    for (let i = 0; i < menuLines.length; i++) {
+      out += this.padLine(menuLines[i], this.cols) + '\x1b[K\n';
+    }
+
+    if (this.promptState) {
+      out += '\x1b[?25h';
+      out += this.promptState.prompt + this.promptState.buffer;
+      out += '\x1b[K\x1b[J';
+    } else {
+      out += '\x1b[?25l';
+      out += this.padLine(this.buildHelpLine(), this.cols) + '\x1b[K\x1b[J';
+    }
+
+    process.stdout.write(out);
+  },
+
+  padLine(line, width) {
+    const plainLen = stripAnsi(line).length;
+    if (plainLen >= width) return line;
+    return line + ' '.repeat(width - plainLen);
+  },
+
+  getVisibleLogs(height) {
+    const total = this.logs.length;
+    const end = Math.max(0, total - this.scrollOffset);
+    const start = Math.max(0, end - height);
+    const slice = this.logs.slice(start, end);
+    const pad = [];
+    for (let i = 0; i < height - slice.length; i++) pad.push('');
+    return pad.concat(slice);
+  },
+
+  buildMenuLines() {
+    const lines = [];
+    const cols = this.cols;
+    const gap = 4;
+    const colWidth = Math.floor((cols - 2 * gap) / 3);
+    let flatIdx = 0;
+
+    for (const section of MENU_DEF) {
+      const headerText = ` ${section.section} `;
+      const padLeft = Math.max(0, Math.floor((cols - headerText.length) / 2));
+      lines.push(' '.repeat(padLeft) + '\x1b[7m' + headerText + '\x1b[0m');
+
+      for (let i = 0; i < section.items.length; i += 3) {
+        const cells = [];
+        for (let j = 0; j < 3; j++) {
+          const item = section.items[i + j];
+          const idx = item ? flatIdx + j : -1;
+          const align = j === 0 ? 'left' : (j === 1 ? 'center' : 'right');
+          cells.push(this.renderItemCell(item, idx, align, colWidth));
+        }
+        lines.push(cells.join(' '.repeat(gap)));
+        flatIdx += Math.min(3, section.items.length - i);
+      }
+      lines.push('');
+    }
+
+    while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+    return lines;
+  },
+
+  renderItemCell(item, idx, align, width) {
+    if (!item) return ' '.repeat(width);
+
+    const selected = (idx === this.selected);
+    const prefix = selected ? '> ' : '  ';
+    const plain = `${prefix}[${item.key}] ${item.label}`;
+
+    let padded;
+    if (align === 'left') {
+      padded = plain.padEnd(width, ' ').slice(0, width);
+    } else if (align === 'right') {
+      padded = plain.padStart(width, ' ').slice(-width);
+    } else {
+      const totalPad = width - plain.length;
+      if (totalPad <= 0) {
+        padded = plain.slice(0, width);
+      } else {
+        const leftPad = Math.floor(totalPad / 2);
+        padded = ' '.repeat(leftPad) + plain + ' '.repeat(totalPad - leftPad);
+      }
+    }
+
+    if (selected) return c.bold + c.cyan + padded + c.reset;
+    return padded;
+  },
+
+  buildHelpLine() {
+    return ` ${c.gray}Up/Down navigate   Enter select   PgUp/PgDn scroll   h help   q quit   (${this.selected + 1}/${this.menu.length})${c.reset}`;
+  },
+
+  handleInput(chunk) {
+    if (this.suspended) return;
+
+    const str = chunk.toString('utf8');
+
+    if (this.promptState) {
+      this.handlePromptInput(str);
+      return;
+    }
+
+    if (this.executing) {
+      if (str.includes('\x03')) this.exit();
+      return;
+    }
+
+    let i = 0;
+    while (i < str.length) {
+      const ch = str[i];
+
+      if (ch === '\x1b') {
+        if (str[i + 1] === '[') {
+          const code = str[i + 2];
+          if (code === 'A') { this.moveSelection(-1); i += 3; continue; }
+          if (code === 'B') { this.moveSelection(1); i += 3; continue; }
+          if (code === 'C') { this.moveSelection(1); i += 3; continue; }
+          if (code === 'D') { this.moveSelection(-1); i += 3; continue; }
+          if (code === '5' && str[i + 3] === '~') { this.scroll(-1); i += 4; continue; }
+          if (code === '6' && str[i + 3] === '~') { this.scroll(1); i += 4; continue; }
+          i += 3;
+          continue;
+        }
+        i += 1;
+        continue;
+      }
+
+      if (ch === '\r' || ch === '\n') { this.runSelected(); return; }
+      if (ch === '\x03' || ch === '\x04') { this.exit(); return; }
+
+      const lower = ch.toLowerCase();
+
+      if (lower === 'q') { this.exit(); return; }
+      if (lower === 'h') {
+        this.pushLog(`${c.cyan}Help:${c.reset} use Up/Down + Enter, or press shortcut keys directly (1-9, b, d, v, i, s, u, c). q quits. PgUp/PgDn scrolls log.`);
+        return;
+      }
+
+      const idx = this.menu.findIndex(it => it.key === lower);
+      if (idx >= 0) {
+        this.selected = idx;
+        this.render();
+        this.runSelected();
+        return;
+      }
+
+      i += 1;
+    }
+  },
+
+  handlePromptInput(str) {
+    const p = this.promptState;
+    let changed = false;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str[i];
+
+      if (ch === '\r' || ch === '\n') {
+        const answer = p.buffer;
+        this.promptState = null;
+        this.render();
+        p.resolve(answer);
+        return;
+      }
+      if (ch === '\x03') {
+        this.promptState = null;
+        this.render();
+        p.resolve(null);
+        return;
+      }
+      if (ch === '\x7f' || ch === '\b') {
+        if (p.buffer.length > 0) { p.buffer = p.buffer.slice(0, -1); changed = true; }
+        continue;
+      }
+      if (ch === '\x1b') { if (str[i + 1] === '[') i += 2; continue; }
+      if (ch >= ' ') { p.buffer += ch; changed = true; }
+    }
+    if (changed) this.render();
+  },
+
+  askUser(prompt) {
+    return new Promise(resolve => {
+      this.promptState = { prompt, buffer: '', resolve };
+      this.render();
+    });
+  },
+
+  moveSelection(delta) {
+    if (this.menu.length === 0) return;
+    const n = this.menu.length;
+    this.selected = (this.selected + delta + n) % n;
+    this.scrollOffset = 0;
+    this.render();
+  },
+
+  scroll(direction) {
+    const page = Math.max(1, Math.floor((this.rows - 15) / 2));
+    if (direction < 0) {
+      this.scrollOffset = Math.min(this.scrollOffset + page, Math.max(0, this.logs.length - 1));
+    } else {
+      this.scrollOffset = Math.max(0, this.scrollOffset - page);
+    }
+    this.render();
+  },
+
+  async runSelected() {
+    if (this.executing) return;
+    const item = this.menu[this.selected];
+    if (!item) return;
+
+    this.executing = true;
+    this.pushLog(`${c.cyan}> ${item.label}${c.reset}`);
+
+    try {
+      await this.executeAction(item);
+    } catch (err) {
+      this.pushLog(`${c.red}Error: ${err.message}${c.reset}`);
+    } finally {
+      this.executing = false;
+      this.render();
+    }
+  },
+
+  async executeAction(item) {
+    const key = item.key;
+
+    if (key === 'd') {
+      await this.runDebugInTui();
+      return;
+    }
+
+    // Actions that spawn subprocesses (tar) or that need a normal
+    // terminal for interactive input should suspend the TUI.
+    const needsSuspend = ['1', '2', '3', 'u', 'c'];
+    if (needsSuspend.includes(key)) {
+      this.suspend();
+      try {
+        await handleMenuChoice(key, this.deps);
+      } finally {
+        this.resume();
+      }
+      return;
+    }
+
+    await handleMenuChoice(key, this.deps);
+  },
+
+  async runDebugInTui() {
+    this.suspend();
+    _origConsoleLog('');
+    _origConsoleLog('Debug mode active. Press Ctrl+C to stop and return to menu.');
+    _origConsoleLog('');
+
+    try {
+      await new Promise(resolve => {
+        cmdDebug(this.deps.archiver, this.deps.marked, resolve);
+      });
+    } catch (_) {}
+
+    this.resume();
+    this.pushLog(`${c.green}Debug stopped. Returned to menu.${c.reset}`);
+  },
+};
+
+// ─── Redirect console.log / console.error when TUI is active ─────────
+console.log = function (...args) {
+  if (TUI.active && !TUI.suspended) {
+    TUI.pushLog(args.map(a => typeof a === 'string' ? a : String(a)).join(' '));
+  } else {
+    _origConsoleLog(...args);
+  }
+};
+console.error = function (...args) {
+  if (TUI.active && !TUI.suspended) {
+    TUI.pushLog(args.map(a => typeof a === 'string' ? a : String(a)).join(' '));
+  } else {
+    _origConsoleError(...args);
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+//  End of TUI
+// ═══════════════════════════════════════════════════════════════════════
+
 // ─── Cek dependensi ──────────────────────────────────────────────────
 function checkDependencies() {
   try {
@@ -412,20 +878,27 @@ function checkDependencies() {
 }
 
 // ─── Utilitas ──────────────────────────────────────────────────────────
-const rl = readline.createInterface({
+let rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout,
 });
 
 process.on('exit', () => {
   try { rl.close(); } catch (_) {}
+  if (TUI.active) {
+    try { process.stdout.write('\x1b[?25h\x1b[?1049l'); } catch (_) {}
+  }
 });
 
 function closeRL() {
-  if (!interactiveMode) rl.close();
+  if (interactiveMode) return;
+  try { rl.close(); } catch (_) {}
 }
 
 function question(prompt) {
+  if (TUI.active && !TUI.suspended) {
+    return TUI.askUser(prompt);
+  }
   return new Promise((resolve) => rl.question(prompt, resolve));
 }
 
@@ -460,6 +933,7 @@ function sleep(ms) {
 }
 
 async function pauseBeforeMenu(seconds = 3) {
+  if (TUI.active) return;
   if (!process.stdout.isTTY) {
     await sleep(seconds * 1000);
     return;
@@ -2585,7 +3059,7 @@ function buildChapterTitleMap(epubDir, chapters) {
 }
 
 // ─── Debug ─────────────────────────────────────────────────────────────
-async function cmdDebug(archiver, marked) {
+async function cmdDebug(archiver, marked, onStop) {
   const cwd = process.cwd();
   const configPath = path.join(cwd, 'config.txt');
   let type = 'textbook';
@@ -2597,23 +3071,25 @@ async function cmdDebug(archiver, marked) {
   }
 
   if (isComicType(type)) {
-    return await cmdDebugComic(archiver, type);
+    return await cmdDebugComic(archiver, type, onStop);
   }
-  return await cmdDebugTextbook(archiver, marked);
+  return await cmdDebugTextbook(archiver, marked, onStop);
 }
 
-async function cmdDebugTextbook(archiver, marked) {
+async function cmdDebugTextbook(archiver, marked, onStop) {
   const markdownsDir = path.join(process.cwd(), 'Markdowns');
   const epubDir = path.join(process.cwd(), 'EPUB');
 
   if (!fs.existsSync(markdownsDir)) {
     logI18n('markdowns_not_found', {}, 'error');
-    rl.close();
+    if (typeof onStop === 'function') { onStop(); return; }
+    try { rl.close(); } catch (_) {}
     return;
   }
   if (!fs.existsSync(epubDir)) {
     logI18n('epub_dir_not_found', {}, 'error');
-    rl.close();
+    if (typeof onStop === 'function') { onStop(); return; }
+    try { rl.close(); } catch (_) {}
     return;
   }
 
@@ -2652,21 +3128,30 @@ async function cmdDebugTextbook(archiver, marked) {
     });
   }
 
+  if (cmdDebugTextbook._sigintHandler) {
+    process.removeListener('SIGINT', cmdDebugTextbook._sigintHandler);
+    cmdDebugTextbook._sigintHandler = null;
+  }
   const onExit = () => {
     if (watcher) watcher.close();
-    rl.close();
+    process.removeListener('SIGINT', onExit);
+    cmdDebugTextbook._sigintHandler = null;
+    if (typeof onStop === 'function') { onStop(); return; }
+    try { rl.close(); } catch (_) {}
     process.exit(0);
   };
+  cmdDebugTextbook._sigintHandler = onExit;
   process.on('SIGINT', onExit);
 }
 
-async function cmdDebugComic(archiver, type) {
+async function cmdDebugComic(archiver, type, onStop) {
   const epubDir = path.join(process.cwd(), 'EPUB');
   const pagesDir = path.join(epubDir, 'images', 'pages');
 
   if (!fs.existsSync(pagesDir)) {
     logI18n('comic_pages_dir_missing', {}, 'error');
-    rl.close();
+    if (typeof onStop === 'function') { onStop(); return; }
+    try { rl.close(); } catch (_) {}
     return;
   }
 
@@ -2709,11 +3194,19 @@ async function cmdDebugComic(archiver, type) {
     });
   }
 
+  if (cmdDebugComic._sigintHandler) {
+    process.removeListener('SIGINT', cmdDebugComic._sigintHandler);
+    cmdDebugComic._sigintHandler = null;
+  }
   const onExit = () => {
     if (watcher) watcher.close();
-    rl.close();
+    process.removeListener('SIGINT', onExit);
+    cmdDebugComic._sigintHandler = null;
+    if (typeof onStop === 'function') { onStop(); return; }
+    try { rl.close(); } catch (_) {}
     process.exit(0);
   };
+  cmdDebugComic._sigintHandler = onExit;
   process.on('SIGINT', onExit);
 }
 
@@ -3933,7 +4426,7 @@ function printHelp() {
   console.log('');
 }
 
-// ─── Menu ──────────────────────────────────────────────────────────────
+// ─── Menu (fallback, numeric) ──────────────────────────────────────────
 function printMenu() {
   const line = c.gray + '-'.repeat(52) + c.reset;
   console.log('');
@@ -4002,7 +4495,8 @@ async function handleMenuChoice(choice, deps) {
   }
 }
 
-async function runMenu(deps) {
+// ─── Fallback menu (numeric input) ─────────────────────────────────────
+async function runMenuFallback(deps) {
   while (true) {
     printMenu();
     const answer = await question(`  ${c.cyan}>${c.reset} `);
@@ -4021,7 +4515,7 @@ async function runMenu(deps) {
       log(`Error: ${err.message}`, 'error');
     }
 
-    // Debug adalah blocking (sampai Ctrl+C → exit).
+    // Debug is blocking in fallback mode (SIGINT → process exit).
     if (choice === 'd') {
       return;
     }
@@ -4031,21 +4525,35 @@ async function runMenu(deps) {
   }
 }
 
+// ─── TUI menu (arrow keys, full-screen) ────────────────────────────────
+async function runMenuTUI(deps) {
+  TUI.init(deps);
+
+  if (!TUI.enter()) {
+    // TUI couldn't activate — restore rl and fall back.
+    try { rl.close(); } catch (_) {}
+    rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    return await runMenuFallback(deps);
+  }
+
+  await new Promise(resolve => { TUI.onExit = resolve; });
+}
+
 // ─── Main ──────────────────────────────────────────────────────────────
 async function main() {
-  const settings = loadSettings();
+  loadSettings();
 
   const args = process.argv.slice(2);
   const command = args[0];
 
   if (command === '--version' || command === '-v') {
     console.log(`epubcreator v${VERSION}`);
-    rl.close();
+    try { rl.close(); } catch (_) {}
     return;
   }
   if (command === 'help' || command === '--help') {
     printHelp();
-    rl.close();
+    try { rl.close(); } catch (_) {}
     return;
   }
 
@@ -4058,8 +4566,16 @@ async function main() {
     } catch (_) {
       process.exit(1);
     }
-    await runMenu(deps);
-    rl.close();
+
+    TUI.cols = process.stdout.columns || 80;
+    TUI.rows = process.stdout.rows || 24;
+
+    if (TUI.canUse()) {
+      await runMenuTUI(deps);
+    } else {
+      await runMenuFallback(deps);
+      try { rl.close(); } catch (_) {}
+    }
     return;
   }
 
@@ -4119,7 +4635,7 @@ async function main() {
     } else {
       logI18n('unknown_command', { cmd: sub }, 'error');
       logI18n('usage_hint', {}, 'info');
-      rl.close();
+      try { rl.close(); } catch (_) {}
     }
     return;
   }
@@ -4151,7 +4667,7 @@ async function main() {
 
   logI18n('unknown_command', { cmd: command }, 'error');
   logI18n('usage_hint', {}, 'info');
-  rl.close();
+  try { rl.close(); } catch (_) {}
 }
 
 async function cmdBuild(archiver) {
@@ -4161,5 +4677,8 @@ async function cmdBuild(archiver) {
 
 main().catch((err) => {
   console.error(`${c.red}[!!]${c.reset} Error: ${err.message}`);
-  rl.close();
+  try { rl.close(); } catch (_) {}
+  if (TUI.active) {
+    try { process.stdout.write('\x1b[?25h\x1b[?1049l'); } catch (_) {}
+  }
 });
