@@ -2,7 +2,7 @@
 
 CLI tool for compiling a directory into an EPUB ebook
 
-**Version: 4.0.0**
+**Version: 4.0.2**
 
 ---
 
@@ -10,23 +10,23 @@ CLI tool for compiling a directory into an EPUB ebook
 
 - 🏗️ Build EPUB from a structured directory
 - 📂 Create directory structure with all necessary files (config, template, dependencies)
-- 🎛️ **Interactive menu** – run without arguments to get an ANSI‑styled menu
-- 📖 **Three book types** – `textbook` (reflowable), `comic` (fixed‑layout LTR), `manga` (fixed‑layout RTL)
-- 🖼️ **Image → XHTML generation** – auto‑generate page XHTML from comic/manga images
-- ↔️ **Auto double‑spread detection** – detects wide landscape images and marks them as `page-spread-center`
+- 🎛️ **Interactive full-screen TUI** – run without arguments to get an ANSI-styled menu with arrow-key navigation
+- 📖 **Three book types** – `textbook` (reflowable), `comic` (fixed-layout LTR), `manga` (fixed-layout RTL)
+- 🖼️ **Image → XHTML generation** – auto-generate page XHTML from comic/manga images
+- ↔️ **Auto double-spread detection** – detects wide landscape images and marks them as `page-spread-center`
 - 🔄 Convert Markdown (.md) to XHTML (.xhtml) and vice versa
 - 📄 Convert DOCX (.docx) to Markdown (.md) with smart heading detection
 - ✂️ **Split** Markdown files by headings (`##`) into multiple files
 - 🔗 **Merge** multiple Markdown files into one (reverse of split)
-- 📥 **Import existing EPUB** – extract chapters, metadata, cover, and media into the project structure (auto‑detects comic/manga fixed‑layout)
-- 🔍 **Debug mode** – watch `Markdowns/` (textbook) or `EPUB/images/pages/` (comic/manga) and auto‑rebuild
-- 📦 **Auto‑download dependencies** – fetch and extract pre‑built `node_modules` from the repository
-- ⚙️ **Tool settings** – interactive configuration (watch delay, auto‑build, overwrite policy, default type)
+- 📥 **Import existing EPUB** – extract chapters, metadata, cover, and media into the project structure (auto-detects comic/manga fixed-layout)
+- 🔍 **Debug mode** – watch `Markdowns/` (textbook) or `EPUB/images/pages/` (comic/manga) and auto-rebuild; runs inside the TUI when launched interactively
+- 📦 **Auto-download dependencies** – fetch and extract pre-built `node_modules` from the repository
+- ⚙️ **Tool settings** – interactive configuration (watch delay, auto-build, overwrite policy, default type)
 - 📋 Chapter/page order control via optional `ord.txt` (with extended format for comic/manga)
 - ✅ **Validate** built EPUBs with `epubcheck`
 - 🎨 Automatic cover, TOC, and metadata generation
-- 📦 Zero‑config build with sensible defaults
-- ⚙️ Flexible input paths and force‑overwrite options
+- 📦 Zero-config build with sensible defaults
+- ⚙️ Flexible input paths and force-overwrite options
 
 ---
 
@@ -39,9 +39,9 @@ cd epubcreator.js
 
 or download as ZIP.
 
-The tool itself is self‑contained – you only need Node.js. Dependencies and configuration files are downloaded automatically when you run `createdir` or `updatemodule`.
+The tool itself is self-contained – you only need Node.js. Dependencies and configuration files are downloaded automatically when you run `createdir` or `updatemodule`.
 
-**Main dependencies** (auto‑downloaded via `updatemodule`):
+**Main dependencies** (auto-downloaded via `updatemodule`):
 - archiver@5.3.0
 - marked@4.0.0
 - turndown@7.2.4
@@ -66,7 +66,7 @@ Or run `node epubcreator.js updatemodule` to download everything automatically.
 
 ```bash
 node epubcreator.js <command> [options]
-node epubcreator.js              # interactive menu
+node epubcreator.js              # interactive menu (TUI)
 ```
 
 ### Available Commands
@@ -82,7 +82,7 @@ node epubcreator.js              # interactive menu
 
 - **convertch img2xhtml [options]**
   Generate `.xhtml` page files from images in `EPUB/images/pages/` (comic/manga mode).
-  Auto‑creates/updates `ord.txt`.
+  Auto-creates/updates `ord.txt`.
 
 - **convertch xhtml2md [path]**
   Convert `.xhtml` files to `.md` (scans `EPUB/` or given path).
@@ -101,24 +101,25 @@ node epubcreator.js              # interactive menu
 
 - **build**
   Build EPUB from current directory.
-  Auto‑detects `type` from `config.txt` (`textbook` → reflowable, `comic`/`manga` → fixed‑layout).
+  Auto-detects `type` from `config.txt` (`textbook` → reflowable, `comic`/`manga` → fixed-layout).
 
 - **debug**
-  Watch for changes and auto‑rebuild.
+  Watch for changes and auto-rebuild.
   Textbook mode watches `Markdowns/`; comic/manga mode watches `EPUB/images/pages/`.
+  When launched from the interactive TUI, debug runs *inside* the TUI — logs stream into the log panel and you press `q` to stop. When launched directly from the CLI, press `Ctrl+C` to exit.
 
 - **import [options]**
   Import an existing `.epub` file from the current directory into the project structure.
-  Auto‑detects fixed‑layout EPUBs and imports them as comic/manga.
+  Auto-detects fixed-layout EPUBs and imports them as comic/manga.
 
 - **updatemodule [--force]**
-  Download/update `node_modules` from the repository (pre‑built bundle from `main` branch).
+  Download/update `node_modules` from the repository (pre-built bundle from `modules` branch).
 
 - **updateconfig [--force]**
   Download/update `.epubcreator/` (tool settings) from the `config` branch.
 
 - **settings**
-  Interactive tool settings editor (watch delay, auto‑build, overwrite policy, default type).
+  Interactive tool settings editor (watch delay, auto-build, overwrite policy, default type).
 
 - **validate**
   Validate the latest built EPUB using `epubcheck` (requires `epubcheck` installed).
@@ -162,40 +163,53 @@ node epubcreator.js              # interactive menu
 
 ---
 
-## 🎛️ Interactive Menu
+## 🎛️ Interactive Menu (TUI)
 
-Running `node epubcreator.js` without any arguments opens an interactive menu:
+Running `node epubcreator.js` without any arguments opens a **full-screen TUI** using the alternate screen buffer. Layout adapts to your terminal size; if the terminal is too small or doesn't support TTY, it falls back to a numeric menu.
 
 ```
-  epubcreator v4.0.0  --  EPUB builder
-  ----------------------------------------------------
+  epubcreator v4.0.2
+  Arrow keys to navigate, Enter to select, q to quit.
 
-  CREATE NEW BOOK
-    1  Textbook
-    2  Comic (LTR)
-    3  Manga (RTL)
+  ───────────── CREATE ─────────────
+  [1] Textbook        [2] Comic LTR      [3] Manga RTL
 
-  CONVERSION
-    4  Markdown -> XHTML
-    5  XHTML -> Markdown
-    6  DOCX -> Markdown
-    7  Images -> XHTML (comic/manga)
-    8  Split Markdown
-    9  Merge Markdown
+  ──────────── CONVERT ─────────────
+  [4] MD>XHTML        [5] XHTML>MD       [6] DOCX>MD
+  [7] IMG>XHTML       [8] Split MD       [9] Merge MD
 
-  BUILD & MANAGE
-    b  Build EPUB
-    d  Debug (auto-rebuild)
-    v  Validate
-    i  Import EPUB
-    s  Settings
-    u  Update module
-    c  Update config
+  ──────── BUILD & MANAGE ──────────
+  [b] Build EPUB      [d] Debug          [v] Validate
+  [i] Import          [s] Settings       [u] Upd modules
+  [c] Upd config
 
-    h  Help      q  Quit
+  Up/Down navigate   Enter select   PgUp/PgDn scroll   h help   q quit   (1/16)
 ```
 
-After each action the menu pauses for 3 seconds and then returns (except for `debug`, which runs until `Ctrl+C`).
+### TUI Controls
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Move selection between menu items |
+| `←` / `→` | Move selection (same as up/down) |
+| `Enter` | Run selected item |
+| `1`–`9`, `b`, `d`, `v`, `i`, `s`, `u`, `c` | Shortcut — jump directly to that action |
+| `PgUp` / `PgDn` | Scroll the log panel |
+| `h` | Show help text in the log panel |
+| `q` | Quit (or stop debug when debug is active) |
+| `Ctrl+C` | Exit (stops debug first if running) |
+
+### Behavior Notes
+
+- Logs from all commands stream into the log panel above the menu.
+- Interactive prompts (file overwrite, type selection, etc.) appear inside the TUI as inline input.
+- Commands that spawn subprocesses (`tar`) or need a normal terminal (creating a directory, updating modules/config) **temporarily suspend the TUI** and restore it afterwards.
+- **Debug** runs entirely inside the TUI: new logs stream in, and pressing `q` stops the watcher without leaving the menu.
+- All output is also written to a **fallback numeric menu** when stdout/stdin isn't a TTY (e.g. piped, small terminal, `NO_TUI=1`). After each action in fallback mode, the menu pauses for 3 seconds.
+
+Environment variables:
+- `NO_COLOR` – disable ANSI colors
+- `NO_TUI` – force the fallback numeric menu
 
 ---
 
@@ -209,9 +223,9 @@ After each action the menu pauses for 3 seconds and then returns (except for `de
 ├── ord.txt                 ← Chapter order list (optional)
 ├── Docs/                   ← Source .docx files (for docx2md)
 ├── Markdowns/              ← Source .md files (for convertch)
-├── .epubcreator/           ← Tool configuration (auto‑downloaded)
+├── .epubcreator/           ← Tool configuration (auto-downloaded)
 │   └── settings.txt        ← Tool settings (watch_delay, auto_build, overwrite_policy, default_type)
-├── node_modules/           ← Dependencies (auto‑downloaded via updatemodule)
+├── node_modules/           ← Dependencies (auto-downloaded via updatemodule)
 ├── EPUB/
 │   ├── images/
 │   │   └── cover.png       ← REQUIRED
@@ -245,7 +259,7 @@ After each action the menu pauses for 3 seconds and then returns (except for `de
 │   │   │   └── 0002.xhtml
 │   │   └── ch2/
 │   │       └── 0001.xhtml
-│   ├── styles/             ← Optional custom CSS (auto‑detected)
+│   ├── styles/             ← Optional custom CSS (auto-detected)
 │   ├── about.xhtml         ← Back-matter (reflowable) optional
 │   └── audiovideo/         ← Optional
 └── builds/
@@ -393,10 +407,10 @@ ch1/0002.xhtml | "Kamu ke mana?"
 
 - `*` forces `page-spread-center`
 - `!` forces a single spread (alternating based on reading direction)
-- No prefix → auto‑detects double‑spread by image aspect ratio (> 1.4 = double)
+- No prefix → auto-detects double-spread by image aspect ratio (> 1.4 = double)
 - `| alt-text` provides a custom page title (used in TOC)
 
-If `ord.txt` doesn't exist, chapters/pages are sorted naturally (numeric‑aware).
+If `ord.txt` doesn't exist, chapters/pages are sorted naturally (numeric-aware).
 
 ---
 
@@ -421,7 +435,7 @@ If `ord.txt` doesn't exist, chapters/pages are sorted naturally (numeric‑aware
   - If exists → appends new entries (asks for confirmation).
   - With `--regen-ord` → asks to regenerate from scratch.
 - `fit_mode` from `config.txt` controls how images scale (`contain`, `cover`, `width`, `height`, `none`).
-- Custom CSS is auto‑detected from `EPUB/styles/` (or from `custom_css` in `config.txt`) and linked into each generated XHTML.
+- Custom CSS is auto-detected from `EPUB/styles/` (or from `custom_css` in `config.txt`) and linked into each generated XHTML.
 
 ### `convertch xhtml2md` — XHTML → Markdown
 
@@ -440,14 +454,14 @@ If `ord.txt` doesn't exist, chapters/pages are sorted naturally (numeric‑aware
 
 ### `split` — Split Markdown by Headings
 
-- Splits a `.md` file (or all `.md` files in a directory) into separate files at each level‑2 heading (`##`).
+- Splits a `.md` file (or all `.md` files in a directory) into separate files at each level-2 heading (`##`).
 - Each part is saved as `[basename]-pN.md`.
 - Supports `--output` and `--force`.
 
 ### `merge` — Merge Markdown Files
 
 - Merges all `.md` files found in a directory (or a single file) into one output file.
-- Files are combined in natural (numeric‑aware) order.
+- Files are combined in natural (numeric-aware) order.
 - Supports `--output` and `--force`.
 
 ---
@@ -480,11 +494,11 @@ If `ord.txt` doesn't exist, chapters/pages are sorted naturally (numeric‑aware
    ```
 
 The builder will:
-- Auto‑sync XHTML from images (silent).
-- Detect double‑spreads by aspect ratio (or respect `*`/`!` in `ord.txt`).
-- Generate a fixed‑layout OPF (`rendition:layout: prepaginated`, `rendition:spread`).
+- Auto-sync XHTML from images (silent).
+- Detect double-spreads by aspect ratio (or respect `*`/`!` in `ord.txt`).
+- Generate a fixed-layout OPF (`rendition:layout: prepaginated`, `rendition:spread`).
 - Produce a nested TOC if chapter folders are used.
-- Include any back‑matter XHTML (reflowable) from `EPUB/` root.
+- Include any back-matter XHTML (reflowable) from `EPUB/` root.
 - Link any custom CSS from `EPUB/styles/` (or from `custom_css` in `config.txt`).
 
 ---
@@ -505,7 +519,8 @@ Usage:
 node epubcreator.js debug
 ```
 
-- Runs until you press `Ctrl+C`.
+- **From the interactive TUI:** debug runs inside the TUI. Logs stream into the log panel; press `q` to stop, `Ctrl+C` to exit the whole program.
+- **From the CLI:** runs until you press `Ctrl+C` (SIGINT kills the process).
 - Uses a debounce delay from `.epubcreator/settings.txt` (default: 500ms).
 
 ---
@@ -537,9 +552,9 @@ node epubcreator.js import --force --output ./my_book
 
 ---
 
-## ⚡ Auto‑Download Dependencies (`updatemodule`)
+## ⚡ Auto-Download Dependencies (`updatemodule`)
 
-Downloads a pre‑built tarball from the `main` branch and extracts `node_modules`.
+Downloads a pre-built tarball from the `modules` branch and extracts `node_modules`.
 
 ```bash
 node epubcreator.js updatemodule
@@ -707,6 +722,7 @@ node epubcreator.js settings
 
 ```bash
 node epubcreator.js debug
+# Or launch the interactive TUI (no args) and press "d"
 ```
 
 ### 16. Validate the latest build

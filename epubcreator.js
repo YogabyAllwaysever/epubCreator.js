@@ -2,7 +2,7 @@
 /**
  * epubcreator.js — Node CLI untuk kompilasi direktori ke EPUB
  *
- * Versi: 4.0.1 (interactive menu + ANSI UI + comic/manga/textbook)
+ * Versi: 4.0.2 (interactive menu + ANSI UI + comic/manga/textbook)
  *
  *  Copyright (C) 2026 YogabyAllwaysever.
  *
@@ -29,7 +29,7 @@
  *   node epubcreator.js help               → tampilkan bantuan
  */
 
-const VERSION = '4.0.1';
+const VERSION = '4.0.2';
 
 const fs = require('fs');
 const path = require('path');
@@ -182,7 +182,7 @@ const MESSAGES = {
   // updatemodule & updateconfig
   node_modules_missing: 'node_modules not found.',
   download_confirm: 'Download pre-built dependencies from repository? (y/n) ',
-  extract_no_assets: 'Folder assets/node_modules not found in archive.',
+  extract_no_assets: 'Folder node_modules not found in archive.',
   download_start: 'Downloading bundle ...',
   download_complete: 'Download complete. Extracting ...',
   download_failed: 'Failed to download bundle: {error}',
@@ -1821,7 +1821,7 @@ async function cmdCreateDir(argv) {
     if (ans.toLowerCase() === 'y') {
       try {
         const url = 'https://github.com/YogabyAllwaysever/epubcreator.js/archive/refs/heads/modules.tar.gz';
-        await downloadAndExtract(url, cwd, 'assets/node_modules', 2);
+        await downloadAndExtract(url, cwd, 'node_modules', 1);
         logI18n('extract_success', {}, 'success');
       } catch (err) {
         logI18n('extract_failed', { error: err.message }, 'error');
@@ -4330,8 +4330,8 @@ async function cmdUpdateModule(force = false) {
   }
 
   try {
-    const url = 'https://github.com/YogabyAllwaysever/epubcreator.js/archive/refs/heads/main.tar.gz';
-    await downloadAndExtract(url, process.cwd(), 'assets/node_modules', 2);
+    const url = 'https://github.com/YogabyAllwaysever/epubcreator.js/archive/refs/heads/modules.tar.gz';
+    await downloadAndExtract(url, process.cwd(), 'node_modules', 1);
     logI18n('extract_success', {}, 'success');
   } catch (err) {
     logI18n('extract_failed', { error: err.message }, 'error');
