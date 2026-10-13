@@ -2,7 +2,7 @@
 /**
  * epubcreator.js — Node CLI untuk kompilasi direktori ke EPUB
  *
- * Versi: 4.0.0 (interactive menu + ANSI UI + comic/manga/textbook)
+ * Versi: 4.0.1 (interactive menu + ANSI UI + comic/manga/textbook)
  *
  *  Copyright (C) 2026 YogabyAllwaysever.
  *
@@ -29,7 +29,7 @@
  *   node epubcreator.js help               → tampilkan bantuan
  */
 
-const VERSION = '4.0.0';
+const VERSION = '4.0.1';
 
 const fs = require('fs');
 const path = require('path');
@@ -200,12 +200,13 @@ const MESSAGES = {
 
   // debug
   debug_usage: 'node epubcreator.js debug  -> Watch changes, auto convertch + build',
-  debug_start: 'Watching Markdowns/ for changes... Press Ctrl+C to stop.',
-  debug_start_comic: 'Watching EPUB/images/pages/ for changes... Press Ctrl+C to stop.',
+  debug_start: 'Watching Markdowns/ for changes... Press q to stop, Ctrl+C to exit.',
+  debug_start_comic: 'Watching EPUB/images/pages/ for changes... Press q to stop, Ctrl+C to exit.',
   debug_change: 'Changes detected, rebuilding...',
   debug_error: 'Error during rebuild: {error}',
   debug_watch_fallback: 'Warning: recursive watch not supported, watching root directory only (subdirectory changes may not trigger).',
   debug_watching_again: 'Watching again...',
+  debug_stopped: 'Debug stopped.',
 
   // settings command
   settings_title: '=== .epubcreator/settings.txt ===',
@@ -307,6 +308,8 @@ For validation: install epubcheck (https://github.com/w3c/epubcheck)
 
 // ─── Variabel global ──────────────────────────────────────────────────
 let interactiveMode = false;
+// Slot tunggal untuk menghentikan debug yang sedang aktif (TUI atau fallback).
+let _activeDebugStop = null;
 
 // ─── Emoji strip (safety net) ─────────────────────────────────────────
 const EMOJI_PREFIX_RE = /^[\s\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2139}\u{2190}-\u{21FF}\u{2300}-\u{23FF}\u{FE0F}\u{200D}]+/u;
@@ -428,6 +431,7 @@ const TUI = {
   active: false,
   suspended: false,
   executing: false,
+  debugActive: false,
   cols: 80,
   rows: 24,
   logs: [],
@@ -648,6 +652,9 @@ const TUI = {
   },
 
   buildHelpLine() {
+    if (this.debugActive) {
+      return ` ${c.yellow}Debug active — q stop   PgUp/PgDn scroll   Ctrl+C exit${c.reset}`;
+    }
     return ` ${c.gray}Up/Down navigate   Enter select   PgUp/PgDn scroll   h help   q quit   (${this.selected + 1}/${this.menu.length})${c.reset}`;
   },
 
@@ -658,6 +665,12 @@ const TUI = {
 
     if (this.promptState) {
       this.handlePromptInput(str);
+      return;
+    }
+
+    // Debug mode: tangkap q untuk stop, Ctrl+C untuk kill, PgUp/PgDn untuk scroll.
+    if (this.debugActive) {
+      this.handleDebugInput(str);
       return;
     }
 
@@ -709,6 +722,33 @@ const TUI = {
     }
   },
 
+  handleDebugInput(str) {
+    let i = 0;
+    while (i < str.length) {
+      const ch = str[i];
+
+      if (ch === '\x03') {
+        // Ctrl+C: stop debug dulu (biar watcher ditutup), lalu exit TUI.
+        if (_activeDebugStop) _activeDebugStop();
+        this.exit();
+        return;
+      }
+      if (ch === 'q' || ch === 'Q') {
+        if (_activeDebugStop) _activeDebugStop();
+        return;
+      }
+      if (ch === '\x1b' && str[i + 1] === '[') {
+        const code = str[i + 2];
+        if (code === '5' && str[i + 3] === '~') { this.scroll(-1); i += 4; continue; }
+        if (code === '6' && str[i + 3] === '~') { this.scroll(1); i += 4; continue; }
+        // Telan escape sequence lain (arrow, dsb) tanpa aksi.
+        i += 3;
+        continue;
+      }
+      i += 1;
+    }
+  },
+
   handlePromptInput(str) {
     const p = this.promptState;
     let changed = false;
@@ -723,9 +763,11 @@ const TUI = {
         return;
       }
       if (ch === '\x03') {
+        // Fix bug: resolve dengan string kosong, bukan null,
+        // supaya caller tidak crash saat memanggil .toLowerCase()/.trim().
         this.promptState = null;
         this.render();
-        p.resolve(null);
+        p.resolve('');
         return;
       }
       if (ch === '\x7f' || ch === '\b') {
@@ -806,19 +848,22 @@ const TUI = {
   },
 
   async runDebugInTui() {
-    this.suspend();
-    _origConsoleLog('');
-    _origConsoleLog('Debug mode active. Press Ctrl+C to stop and return to menu.');
-    _origConsoleLog('');
+    // Opsi B: TUI TIDAK di-suspend. Log debug masuk ke log panel TUI
+    // lewat console.log redirect. User tekan q untuk stop.
+    this.debugActive = true;
+    this.pushLog(`${c.yellow}Debug mode active. Press q to stop, Ctrl+C to exit.${c.reset}`);
+    this.render();
 
     try {
-      await new Promise(resolve => {
-        cmdDebug(this.deps.archiver, this.deps.marked, resolve);
-      });
-    } catch (_) {}
+      await cmdDebug(this.deps.archiver, this.deps.marked);
+    } catch (err) {
+      this.pushLog(`${c.red}Debug error: ${err.message}${c.reset}`);
+    } finally {
+      this.debugActive = false;
+    }
 
-    this.resume();
     this.pushLog(`${c.green}Debug stopped. Returned to menu.${c.reset}`);
+    this.render();
   },
 };
 
@@ -1775,7 +1820,7 @@ async function cmdCreateDir(argv) {
     const ans = await question(t('download_confirm'));
     if (ans.toLowerCase() === 'y') {
       try {
-        const url = 'https://github.com/YogabyAllwaysever/epubcreator.js/archive/refs/heads/main.tar.gz';
+        const url = 'https://github.com/YogabyAllwaysever/epubcreator.js/archive/refs/heads/modules.tar.gz';
         await downloadAndExtract(url, cwd, 'assets/node_modules', 2);
         logI18n('extract_success', {}, 'success');
       } catch (err) {
@@ -2108,7 +2153,7 @@ async function convertOneMdFile(mdFile, outputDir, force = false, marked) {
   const xhtmlExists = fs.existsSync(xhtmlFile);
   if (!force && xhtmlExists) {
     const answer = await question(t('xhtml_already_exists', { file: path.basename(xhtmlFile) }));
-    const choice = answer.toLowerCase();
+    const choice = (answer || '').toLowerCase();
     if (choice === 'c') {
       logI18n('skip_file', { file: path.basename(mdFile) }, 'warn');
       return false;
@@ -2224,7 +2269,7 @@ async function cmdConvertCh(filePath, force = false, marked) {
     });
     if (!force && existing.length > 0) {
       const answer = await question(t('xhtml_exists', { count: existing.length }));
-      const choice = answer.toLowerCase();
+      const choice = (answer || '').toLowerCase();
       if (choice === 'c') {
         logI18n('convert_cancelled', {}, 'warn');
         closeRL();
@@ -2481,7 +2526,7 @@ async function cmdDocxToMd(argv) {
         const mdPath = path.join(outDir, `${baseName}.md`);
         if (fs.existsSync(mdPath) && !force) {
           const ans = await question(t('file_exists', { file: path.basename(mdPath) }));
-          if (ans.toLowerCase() !== 'y') {
+          if ((ans || '').toLowerCase() !== 'y') {
             logI18n('skip_file', { file: path.basename(mdPath) }, 'warn');
             continue;
           }
@@ -2495,7 +2540,7 @@ async function cmdDocxToMd(argv) {
           const mdPath = path.join(outDir, `p-${num}.md`);
           if (fs.existsSync(mdPath) && !force) {
             const ans = await question(t('file_exists', { file: path.basename(mdPath) }));
-            if (ans.toLowerCase() !== 'y') {
+            if ((ans || '').toLowerCase() !== 'y') {
               logI18n('skip_file', { file: path.basename(mdPath) }, 'warn');
               continue;
             }
@@ -2588,7 +2633,7 @@ async function cmdSplit(argv) {
         const dest = path.join(outDir, `${baseName}.md`);
         if (fs.existsSync(dest) && !force) {
           const ans = await question(t('file_exists', { file: path.basename(dest) }));
-          if (ans.toLowerCase() !== 'y') {
+          if ((ans || '').toLowerCase() !== 'y') {
             logI18n('skip_file', { file: path.basename(dest) }, 'warn');
             continue;
           }
@@ -2604,7 +2649,7 @@ async function cmdSplit(argv) {
           const dest = path.join(outDir, `${baseName}-p${num}.md`);
           if (fs.existsSync(dest) && !force) {
             const ans = await question(t('file_exists', { file: path.basename(dest) }));
-            if (ans.toLowerCase() !== 'y') {
+            if ((ans || '').toLowerCase() !== 'y') {
               logI18n('skip_file', { file: path.basename(dest) }, 'warn');
               continue;
             }
@@ -2684,7 +2729,7 @@ async function cmdMerge(argv) {
   const outPath = path.resolve(process.cwd(), outputFile);
   if (fs.existsSync(outPath) && !force) {
     const ans = await question(t('file_exists', { file: path.basename(outPath) }));
-    if (ans.toLowerCase() !== 'y') {
+    if ((ans || '').toLowerCase() !== 'y') {
       logI18n('cancelled', {}, 'warn');
       closeRL();
       return;
@@ -3059,7 +3104,14 @@ function buildChapterTitleMap(epubDir, chapters) {
 }
 
 // ─── Debug ─────────────────────────────────────────────────────────────
-async function cmdDebug(archiver, marked, onStop) {
+// Catatan desain:
+//   - cmdDebug dan turunannya TIDAK lagi menerima param onStop.
+//   - Mereka mengembalikan Promise yang resolve saat _activeDebugStop() dipanggil.
+//   - Handler SIGINT manual dihapus, sehingga Ctrl+C (SIGINT) = kill program
+//     secara default saat di CLI / fallback dengan cooked mode.
+//   - Selama debug di TUI, raw mode aktif, sehingga Ctrl+C datang sebagai byte
+//     \x03; TUI.handleDebugInput yang menerjemahkannya (stop debug + exit TUI).
+async function cmdDebug(archiver, marked) {
   const cwd = process.cwd();
   const configPath = path.join(cwd, 'config.txt');
   let type = 'textbook';
@@ -3071,25 +3123,21 @@ async function cmdDebug(archiver, marked, onStop) {
   }
 
   if (isComicType(type)) {
-    return await cmdDebugComic(archiver, type, onStop);
+    return await cmdDebugComic(archiver, type);
   }
-  return await cmdDebugTextbook(archiver, marked, onStop);
+  return await cmdDebugTextbook(archiver, marked);
 }
 
-async function cmdDebugTextbook(archiver, marked, onStop) {
+async function cmdDebugTextbook(archiver, marked) {
   const markdownsDir = path.join(process.cwd(), 'Markdowns');
   const epubDir = path.join(process.cwd(), 'EPUB');
 
   if (!fs.existsSync(markdownsDir)) {
     logI18n('markdowns_not_found', {}, 'error');
-    if (typeof onStop === 'function') { onStop(); return; }
-    try { rl.close(); } catch (_) {}
     return;
   }
   if (!fs.existsSync(epubDir)) {
     logI18n('epub_dir_not_found', {}, 'error');
-    if (typeof onStop === 'function') { onStop(); return; }
-    try { rl.close(); } catch (_) {}
     return;
   }
 
@@ -3128,30 +3176,23 @@ async function cmdDebugTextbook(archiver, marked, onStop) {
     });
   }
 
-  if (cmdDebugTextbook._sigintHandler) {
-    process.removeListener('SIGINT', cmdDebugTextbook._sigintHandler);
-    cmdDebugTextbook._sigintHandler = null;
-  }
-  const onExit = () => {
-    if (watcher) watcher.close();
-    process.removeListener('SIGINT', onExit);
-    cmdDebugTextbook._sigintHandler = null;
-    if (typeof onStop === 'function') { onStop(); return; }
-    try { rl.close(); } catch (_) {}
-    process.exit(0);
-  };
-  cmdDebugTextbook._sigintHandler = onExit;
-  process.on('SIGINT', onExit);
+  return new Promise((resolve) => {
+    const stop = () => {
+      if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
+      if (watcher) { try { watcher.close(); } catch (_) {} watcher = null; }
+      if (_activeDebugStop === stop) _activeDebugStop = null;
+      resolve();
+    };
+    _activeDebugStop = stop;
+  });
 }
 
-async function cmdDebugComic(archiver, type, onStop) {
+async function cmdDebugComic(archiver, type) {
   const epubDir = path.join(process.cwd(), 'EPUB');
   const pagesDir = path.join(epubDir, 'images', 'pages');
 
   if (!fs.existsSync(pagesDir)) {
     logI18n('comic_pages_dir_missing', {}, 'error');
-    if (typeof onStop === 'function') { onStop(); return; }
-    try { rl.close(); } catch (_) {}
     return;
   }
 
@@ -3194,20 +3235,15 @@ async function cmdDebugComic(archiver, type, onStop) {
     });
   }
 
-  if (cmdDebugComic._sigintHandler) {
-    process.removeListener('SIGINT', cmdDebugComic._sigintHandler);
-    cmdDebugComic._sigintHandler = null;
-  }
-  const onExit = () => {
-    if (watcher) watcher.close();
-    process.removeListener('SIGINT', onExit);
-    cmdDebugComic._sigintHandler = null;
-    if (typeof onStop === 'function') { onStop(); return; }
-    try { rl.close(); } catch (_) {}
-    process.exit(0);
-  };
-  cmdDebugComic._sigintHandler = onExit;
-  process.on('SIGINT', onExit);
+  return new Promise((resolve) => {
+    const stop = () => {
+      if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
+      if (watcher) { try { watcher.close(); } catch (_) {} watcher = null; }
+      if (_activeDebugStop === stop) _activeDebugStop = null;
+      resolve();
+    };
+    _activeDebugStop = stop;
+  });
 }
 
 // ─── Parsing config ────────────────────────────────────────────────────
@@ -3788,7 +3824,7 @@ async function cmdImport(argv) {
     console.log(t('import_select'));
     files.forEach((f, i) => console.log(`  ${i+1}. ${f}`));
     const answer = await question(t('import_select_prompt', { count: files.length }));
-    const idx = parseInt(answer.trim());
+    const idx = parseInt((answer || '').trim());
     if (isNaN(idx) || idx < 1 || idx > files.length) {
       logI18n('import_invalid_choice', {}, 'error');
       closeRL();
@@ -4076,7 +4112,7 @@ async function cmdImport(argv) {
     });
     if (fs.existsSync(configPath) && !force) {
       const ans = await question(t('file_exists', { file: 'config.txt' }));
-      if (ans.toLowerCase() === 'y') {
+      if ((ans || '').toLowerCase() === 'y') {
         fs.writeFileSync(configPath, configContent, 'utf8');
         logI18n('overwritten', { file: 'config.txt' }, 'success');
       } else {
@@ -4090,7 +4126,7 @@ async function cmdImport(argv) {
     const ordPath = path.join(outputDir, 'ord.txt');
     if (fs.existsSync(ordPath) && !force) {
       const ans = await question(t('file_exists', { file: 'ord.txt' }));
-      if (ans.toLowerCase() === 'y') {
+      if ((ans || '').toLowerCase() === 'y') {
         writeOrdFile(ordPath, ordComicEntries, true);
         logI18n('overwritten', { file: 'ord.txt' }, 'success');
       } else {
@@ -4173,7 +4209,7 @@ async function cmdImport(argv) {
   });
   if (fs.existsSync(configPath) && !force) {
     const ans = await question(t('file_exists', { file: 'config.txt' }));
-    if (ans.toLowerCase() === 'y') {
+    if ((ans || '').toLowerCase() === 'y') {
       fs.writeFileSync(configPath, configContent, 'utf8');
       logI18n('overwritten', { file: 'config.txt' }, 'success');
     } else {
@@ -4189,7 +4225,7 @@ async function cmdImport(argv) {
   ordContent += chapterFiles.join('\n');
   if (fs.existsSync(ordPath) && !force) {
     const ans = await question(t('file_exists', { file: 'ord.txt' }));
-    if (ans.toLowerCase() === 'y') {
+    if ((ans || '').toLowerCase() === 'y') {
       fs.writeFileSync(ordPath, ordContent, 'utf8');
       logI18n('overwritten', { file: 'ord.txt' }, 'success');
     } else {
@@ -4284,7 +4320,7 @@ async function cmdUpdateModule(force = false) {
   const nodeModulesDir = path.join(process.cwd(), 'node_modules');
   if (fs.existsSync(nodeModulesDir) && !force) {
     const ans = await question(t('update_confirm'));
-    if (ans.toLowerCase() !== 'y') {
+    if ((ans || '').toLowerCase() !== 'y') {
       logI18n('cancelled', {}, 'warn');
       closeRL();
       return;
@@ -4308,7 +4344,7 @@ async function cmdUpdateConfig(force = false) {
   const configDir = path.join(process.cwd(), TOOL_DIR);
   if (fs.existsSync(configDir) && !force) {
     const ans = await question(t('updateconfig_confirm'));
-    if (ans.toLowerCase() !== 'y') {
+    if ((ans || '').toLowerCase() !== 'y') {
       logI18n('cancelled', {}, 'warn');
       closeRL();
       return;
@@ -4345,7 +4381,7 @@ async function cmdSettings() {
   for (const k of keys) {
     const prompt = `[${k}] (${current[k]}): `;
     const answer = await question(prompt);
-    if (answer.trim().toLowerCase() === 'save') {
+    if ((answer || '').trim().toLowerCase() === 'save') {
       for (const kk of keys) {
         if (newSettings[kk] === undefined) {
           newSettings[kk] = current[kk];
@@ -4353,12 +4389,12 @@ async function cmdSettings() {
       }
       break;
     }
-    if (answer.trim().toLowerCase() === 'cancel') {
+    if ((answer || '').trim().toLowerCase() === 'cancel') {
       logI18n('settings_cancelled', {}, 'warn');
       closeRL();
       return;
     }
-    if (answer.trim() !== '') {
+    if ((answer || '').trim() !== '') {
       if (k === 'watch_delay' && isNaN(parseInt(answer.trim()))) {
         logI18n('settings_invalid_value', {}, 'warn');
         newSettings[k] = current[k];
@@ -4472,18 +4508,18 @@ async function handleMenuChoice(choice, deps) {
     case '7': await cmdImg2Xhtml([]); break;
     case '8': {
       const p = await question(`  ${c.gray}Path to .md file or directory [Markdowns]:${c.reset} `);
-      const target = p.trim() || 'Markdowns';
+      const target = (p || '').trim() || 'Markdowns';
       await cmdSplit([target]);
       break;
     }
     case '9': {
       const p = await question(`  ${c.gray}Path to .md file or directory [Markdowns]:${c.reset} `);
-      const target = p.trim() || 'Markdowns';
+      const target = (p || '').trim() || 'Markdowns';
       await cmdMerge([target]);
       break;
     }
     case 'b': await cmdBuild(archiver); break;
-    case 'd': await cmdDebug(archiver, marked); break;
+    // 'd' (debug) sekarang ditangani eksplisit oleh TUI.executeAction / runMenuFallback.
     case 'v': await cmdValidate(); break;
     case 'i': await cmdImport([]); break;
     case 's': await cmdSettings(); break;
@@ -4495,12 +4531,58 @@ async function handleMenuChoice(choice, deps) {
   }
 }
 
+// ─── Fallback debug runner ─────────────────────────────────────────────
+// Fallback TIDAK punya raw-mode TUI. Jadi kita pinjam raw mode sementara
+// untuk mendeteksi satu tombol 'q', lalu restore rl setelah selesai.
+async function runDebugFallback(deps) {
+  // Lepas rl supaya tidak merebut stdin dari listener raw-mode kita.
+  try { rl.close(); } catch (_) {}
+  try { process.stdin.setRawMode(true); } catch (_) {}
+  process.stdin.resume();
+
+  console.log('');
+  log(`Debug mode active. Press ${c.bold}q${c.reset} to stop, Ctrl+C to exit.`, 'info');
+  console.log('');
+
+  const stopKeyPromise = new Promise((resolve) => {
+    const handler = (chunk) => {
+      const str = chunk.toString('utf8');
+      if (str.includes('q') || str.includes('Q')) {
+        process.stdin.removeListener('data', handler);
+        resolve('stop');
+      } else if (str.includes('\x03')) {
+        // Ctrl+C di raw mode tidak jadi SIGINT. Kita berhentikan debug
+        // lalu kill process (agar konsisten dengan "Ctrl+C = kill").
+        process.stdin.removeListener('data', handler);
+        if (_activeDebugStop) _activeDebugStop();
+        // eslint-disable-next-line no-process-exit
+        process.exit(0);
+      }
+    };
+    process.stdin.on('data', handler);
+  });
+
+  const debugPromise = cmdDebug(deps.archiver, deps.marked);
+
+  await Promise.race([
+    debugPromise,
+    stopKeyPromise.then(() => {
+      if (_activeDebugStop) _activeDebugStop();
+      return debugPromise;
+    }),
+  ]);
+
+  // Restore: matikan raw mode, hidupkan lagi rl untuk menu loop.
+  try { process.stdin.setRawMode(false); } catch (_) {}
+  rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+}
+
 // ─── Fallback menu (numeric input) ─────────────────────────────────────
 async function runMenuFallback(deps) {
   while (true) {
     printMenu();
     const answer = await question(`  ${c.cyan}>${c.reset} `);
-    const choice = answer.trim().toLowerCase();
+    const choice = (answer || '').trim().toLowerCase();
 
     if (!choice) continue;
     if (choice === 'q' || choice === 'quit' || choice === 'exit') {
@@ -4510,14 +4592,13 @@ async function runMenuFallback(deps) {
 
     console.log('');
     try {
-      await handleMenuChoice(choice, deps);
+      if (choice === 'd') {
+        await runDebugFallback(deps);
+      } else {
+        await handleMenuChoice(choice, deps);
+      }
     } catch (err) {
       log(`Error: ${err.message}`, 'error');
-    }
-
-    // Debug is blocking in fallback mode (SIGINT → process exit).
-    if (choice === 'd') {
-      return;
     }
 
     console.log('');
@@ -4661,6 +4742,8 @@ async function main() {
   }
 
   if (command === 'debug') {
+    // Di mode CLI murni, debug berjalan sampai user menekan Ctrl+C
+    // (SIGINT default = kill proses). _activeDebugStop tidak pernah dipanggil.
     await cmdDebug(archiver, marked);
     return;
   }
