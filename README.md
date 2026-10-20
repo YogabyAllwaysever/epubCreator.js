@@ -2,7 +2,7 @@
 
 CLI tool for compiling a directory into an EPUB ebook
 
-**Version: 4.0.2**
+**Version: 4.1.0**
 
 ---
 
@@ -17,16 +17,17 @@ CLI tool for compiling a directory into an EPUB ebook
 - 🔄 Convert Markdown (.md) to XHTML (.xhtml) and vice versa
 - 📄 Convert DOCX (.docx) to Markdown (.md) with smart heading detection
 - ✂️ **Split** Markdown files by headings (`##`) into multiple files
-- 🔗 **Merge** multiple Markdown files into one (reverse of split)
+- 🔔 **Merge** multiple Markdown files into one (reverse of split)
 - 📥 **Import existing EPUB** – extract chapters, metadata, cover, and media into the project structure (auto-detects comic/manga fixed-layout)
 - 🔍 **Debug mode** – watch `Markdowns/` (textbook) or `EPUB/images/pages/` (comic/manga) and auto-rebuild; runs inside the TUI when launched interactively
-- 📦 **Auto-download dependencies** – fetch and extract pre-built `node_modules` from the repository
+- 📦 **Auto-download dependencies** – fetch and extract pre-built `node_modules` from the repository (also runs automatically on first launch of the interactive menu)
 - ⚙️ **Tool settings** – interactive configuration (watch delay, auto-build, overwrite policy, default type)
 - 📋 Chapter/page order control via optional `ord.txt` (with extended format for comic/manga)
 - ✅ **Validate** built EPUBs with `epubcheck`
 - 🎨 Automatic cover, TOC, and metadata generation
 - 📦 Zero-config build with sensible defaults
 - ⚙️ Flexible input paths and force-overwrite options
+- 💡 **"Maybe you mean…"** hint when a command is mistyped (including alias suggestions for the old `updatemodule`/`updateconfig`)
 
 ---
 
@@ -37,11 +38,11 @@ git clone https://github.com/YogabyAllwaysever/epubcreator.js.git
 cd epubcreator.js
 ```
 
-or download as ZIP.
+Or download as ZIP.
 
-The tool itself is self-contained – you only need Node.js. Dependencies and configuration files are downloaded automatically when you run `createdir` or `updatemodule`.
+The tool itself is self-contained – you only need Node.js. Dependencies and configuration files are downloaded automatically when you run `createdir`, `update module`, or on the **first interactive launch** of `node epubcreator.js`.
 
-**Main dependencies** (auto-downloaded via `updatemodule`):
+**Main dependencies** (auto-downloaded via `update module`):
 - archiver@5.3.0
 - marked@4.0.0
 - turndown@7.2.4
@@ -58,40 +59,28 @@ npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4
 npm install mammoth@1.6.0 adm-zip@0.5.10 xml2js@0.5.0
 ```
 
-Or run `node epubcreator.js updatemodule` to download everything automatically.
+Or run `node epubcreator.js update module` to download everything automatically.
 
 ---
 
 ## 🚀 Usage
 
 ```bash
-node epubcreator.js <command> [options]
+node epubcreator.js [command] [subcommand] [options]
 node epubcreator.js              # interactive menu (TUI)
 ```
 
 ### Available Commands
 
-- **createdir [type]**
+- **createdir [textbook|comic|manga]**
   Create full directory structure, config files, and download `.epubcreator/` + `node_modules/`.
-  `type` can be `textbook` (default), `comic`, or `manga`.
-  If omitted, you'll be prompted interactively.
-  For comic/manga you'll also be asked about chapter grouping and reading direction.
+  If `type` is omitted, you'll be prompted interactively. For comic/manga you'll also be asked about chapter grouping and reading direction.
 
-- **convertch [path] [options]**
-  Convert `.md` files to `.xhtml` (default: scans `Markdowns/` or given path).
-
-- **convertch img2xhtml [options]**
-  Generate `.xhtml` page files from images in `EPUB/images/pages/` (comic/manga mode).
-  Auto-creates/updates `ord.txt`.
-
-- **convertch xhtml2md [path]**
-  Convert `.xhtml` files to `.md` (scans `EPUB/` or given path).
-
-- **convertch docx2md [path] [options]**
-  Convert `.docx` files to `.md` (scans `Docs/` or given path; split by `##`).
-
-- **conv ...**
-  Alias for `convertch` (same subcommands and options).
+- **convertch [subcommand] [path] [options]** — *alias: `conv`*
+  - `md2xhtml` (default) — Convert `.md` files to `.xhtml` (scans `Markdowns/` or given path)
+  - `xhtml2md` — Convert `.xhtml` files to `.md` (scans `EPUB/` or given path)
+  - `docx2md` — Convert `.docx` files to `.md` (scans `Docs/` or given path; split by `##`)
+  - `img2xhtml` — Generate `.xhtml` page files from images in `EPUB/images/pages/` (comic/manga mode); auto-creates/updates `ord.txt`
 
 - **split <path> [options]**
   Split a Markdown file (or all `.md` files in a directory) by heading level 2 (`##`) into multiple files.
@@ -100,7 +89,7 @@ node epubcreator.js              # interactive menu (TUI)
   Merge multiple Markdown files into one (reverse of `split`).
 
 - **build**
-  Build EPUB from current directory.
+  Build EPUB from the current directory.
   Auto-detects `type` from `config.txt` (`textbook` → reflowable, `comic`/`manga` → fixed-layout).
 
 - **debug**
@@ -112,11 +101,9 @@ node epubcreator.js              # interactive menu (TUI)
   Import an existing `.epub` file from the current directory into the project structure.
   Auto-detects fixed-layout EPUBs and imports them as comic/manga.
 
-- **updatemodule [--force]**
-  Download/update `node_modules` from the repository (pre-built bundle from `modules` branch).
-
-- **updateconfig [--force]**
-  Download/update `.epubcreator/` (tool settings) from the `config` branch.
+- **update <module|config> [--force]**
+  - `module` — Download/update `node_modules` from the repository (`modules` branch)
+  - `config` — Download/update `.epubcreator/` tool settings from the `config` branch
 
 - **settings**
   Interactive tool settings editor (watch delay, auto-build, overwrite policy, default type).
@@ -158,7 +145,7 @@ node epubcreator.js              # interactive menu (TUI)
 - `--force, -f` – Overwrite existing files.
 - `--output <dir>` – Target directory (default: current directory).
 
-**Options for `updatemodule` / `updateconfig`:**
+**Options for `update module` / `update config`:**
 - `--force, -f` – Skip confirmation and overwrite without asking.
 
 ---
@@ -167,23 +154,24 @@ node epubcreator.js              # interactive menu (TUI)
 
 Running `node epubcreator.js` without any arguments opens a **full-screen TUI** using the alternate screen buffer. Layout adapts to your terminal size; if the terminal is too small or doesn't support TTY, it falls back to a numeric menu.
 
+On **first run** in a fresh project, if `node_modules` is missing, the TUI boot sequence downloads dependencies automatically (no extra prompt) before showing the menu.
+
 ```
-  epubcreator v4.0.2
+  epubcreator v4.1.0
   Arrow keys to navigate, Enter to select, q to quit.
 
-  ───────────── CREATE ─────────────
+  ──────────── CREATE ────────────
   [1] Textbook        [2] Comic LTR      [3] Manga RTL
 
-  ──────────── CONVERT ─────────────
+  ──────────── CONVERT ───────────
   [4] MD>XHTML        [5] XHTML>MD       [6] DOCX>MD
   [7] IMG>XHTML       [8] Split MD       [9] Merge MD
 
-  ──────── BUILD & MANAGE ──────────
+  ────────── BUILD & MANAGE ──────
   [b] Build EPUB      [d] Debug          [v] Validate
-  [i] Import          [s] Settings       [u] Upd modules
-  [c] Upd config
+  [i] Import          [s] Settings       [u] Update...
 
-  Up/Down navigate   Enter select   PgUp/PgDn scroll   h help   q quit   (1/16)
+  Up/Down navigate   Enter select   PgUp/PgDn scroll   h help   q quit   (1/15)
 ```
 
 ### TUI Controls
@@ -193,7 +181,9 @@ Running `node epubcreator.js` without any arguments opens a **full-screen TUI** 
 | `↑` / `↓` | Move selection between menu items |
 | `←` / `→` | Move selection (same as up/down) |
 | `Enter` | Run selected item |
-| `1`–`9`, `b`, `d`, `v`, `i`, `s`, `u`, `c` | Shortcut — jump directly to that action |
+| `1`–`9`, `b`, `d`, `v`, `i`, `s`, `u` | Shortcut — jump directly to that action |
+| `m` / `c` | (Only while Update submenu is open) `update module` / `update config` |
+| `Esc` | (Only while Update submenu is open) cancel and return to menu |
 | `PgUp` / `PgDn` | Scroll the log panel |
 | `h` | Show help text in the log panel |
 | `q` | Quit (or stop debug when debug is active) |
@@ -201,9 +191,10 @@ Running `node epubcreator.js` without any arguments opens a **full-screen TUI** 
 
 ### Behavior Notes
 
+- **Update submenu**: pressing `u` opens a single-key prompt (`m` = module, `c` = config, `Esc` = cancel). This keeps the menu compact while both updates remain one tap away.
 - Logs from all commands stream into the log panel above the menu.
 - Interactive prompts (file overwrite, type selection, etc.) appear inside the TUI as inline input.
-- Commands that spawn subprocesses (`tar`) or need a normal terminal (creating a directory, updating modules/config) **temporarily suspend the TUI** and restore it afterwards.
+- Commands that spawn subprocesses (`tar`) or need a normal terminal (creating a directory, updating module/config) **temporarily suspend the TUI** and restore it afterwards.
 - **Debug** runs entirely inside the TUI: new logs stream in, and pressing `q` stops the watcher without leaving the menu.
 - All output is also written to a **fallback numeric menu** when stdout/stdin isn't a TTY (e.g. piped, small terminal, `NO_TUI=1`). After each action in fallback mode, the menu pauses for 3 seconds.
 
@@ -225,7 +216,7 @@ Environment variables:
 ├── Markdowns/              ← Source .md files (for convertch)
 ├── .epubcreator/           ← Tool configuration (auto-downloaded)
 │   └── settings.txt        ← Tool settings (watch_delay, auto_build, overwrite_policy, default_type)
-├── node_modules/           ← Dependencies (auto-downloaded via updatemodule)
+├── node_modules/           ← Dependencies (auto-downloaded via update module)
 ├── EPUB/
 │   ├── images/
 │   │   └── cover.png       ← REQUIRED
@@ -552,27 +543,31 @@ node epubcreator.js import --force --output ./my_book
 
 ---
 
-## ⚡ Auto-Download Dependencies (`updatemodule`)
+## ⚡ Update Dependencies & Configuration (`update`)
+
+### `update module` — Auto-download dependencies
 
 Downloads a pre-built tarball from the `modules` branch and extracts `node_modules`.
 
 ```bash
-node epubcreator.js updatemodule
-node epubcreator.js updatemodule --force
+node epubcreator.js update module
+node epubcreator.js update module --force
 ```
 
 > Requires the `tar` command (available by default on Linux, macOS, Termux; use Git Bash on Windows).
+>
+> 💡 If you launch the interactive menu (`node epubcreator.js`) with no dependencies installed, `update module` runs automatically before the TUI opens.
 
----
-
-## 🔄 Update Tool Configuration (`updateconfig`)
+### `update config` — Update tool configuration
 
 Downloads the latest `.epubcreator/` folder (settings) from the `config` branch.
 
 ```bash
-node epubcreator.js updateconfig
-node epubcreator.js updateconfig --force
+node epubcreator.js update config
+node epubcreator.js update config --force
 ```
+
+> **Note:** the old commands `updatemodule` / `updateconfig` have been replaced by `update module` / `update config`. If you type one of the old names, the CLI will tell you: *"Maybe you mean: node epubcreator.js update module"*.
 
 ---
 
@@ -703,13 +698,13 @@ node epubcreator.js conv xhtml2md ./EPUB/custom
 ### 12. Download dependencies automatically
 
 ```bash
-node epubcreator.js updatemodule
+node epubcreator.js update module
 ```
 
 ### 13. Update tool configuration
 
 ```bash
-node epubcreator.js updateconfig
+node epubcreator.js update config
 ```
 
 ### 14. Change tool settings interactively
@@ -742,7 +737,7 @@ node epubcreator.js validate
 - `adm-zip` (0.5.10) – EPUB import (optional)
 - `xml2js` (0.5.0) – OPF parsing for import (optional)
 
-All dependencies can be installed manually via `npm install` or automatically via `updatemodule`.
+All dependencies can be installed manually via `npm install` or automatically via `update module`.
 
 ---
 

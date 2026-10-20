@@ -2,7 +2,7 @@
 /**
  * epubcreator.js — Node CLI untuk kompilasi direktori ke EPUB
  *
- * Versi: 4.0.2 (interactive menu + ANSI UI + comic/manga/textbook)
+ * Versi: 4.1.0 (nested help + auto-fix deps + `update module|config`)
  *
  *  Copyright (C) 2026 YogabyAllwaysever.
  *
@@ -21,22 +21,22 @@
  *   node epubcreator.js build              → build EPUB
  *   node epubcreator.js debug              → pantau perubahan, auto build
  *   node epubcreator.js import             → impor file .epub
- *   node epubcreator.js updatemodule       → update node_modules dari repo
- *   node epubcreator.js updateconfig       → update .epubcreator dari repo
+ *   node epubcreator.js update module      → update node_modules dari repo
+ *   node epubcreator.js update config      → update .epubcreator dari repo
  *   node epubcreator.js settings           → ubah pengaturan tool
  *   node epubcreator.js validate           → validasi EPUB dengan epubcheck
  *   node epubcreator.js --version          → tampilkan versi
  *   node epubcreator.js help               → tampilkan bantuan
  */
 
-const VERSION = '4.0.2';
+const VERSION = '4.1.0';
 
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const crypto = require('crypto');
 const https = require('https');
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
 
 // ─── Terminal colors (ANSI, ASCII-safe) ────────────────────────────────
 const _useColor = !!(process.stdout.isTTY && !process.env.NO_COLOR);
@@ -60,8 +60,8 @@ const VALID_TYPES = ['textbook', 'comic', 'manga'];
 // ─── Pesan (EN) ───────────────────────────────────────────────────────
 const MESSAGES = {
   // Pesan umum
-  missing_dep: 'Module "{mod}" (v{version}) not found. Install with:\n  npm install {mod}@{version}\n',
-  marked_old: '"marked" version is too old. Reinstall with:\n  npm install marked@4.0.0\n',
+  missing_dep: 'Module "{mod}" (v{version}) not found. Install with:\n  npm install {mod}@{version}\nor\n  node epubcreator.js update module\n',
+  marked_old: '"marked" version is too old. Reinstall with:\n  npm install marked@4.0.0\nor\n  node epubcreator.js update module\n',
   cancelled: 'Cancelled.',
   file_exists: '{file} already exists. Overwrite? (y/n) ',
   overwritten: '{file} overwritten.',
@@ -179,7 +179,7 @@ const MESSAGES = {
   import_comic_pages: 'Extracted {count} page(s) to EPUB/images/pages/',
   import_ord_written: 'ord.txt written with {count} entries.',
 
-  // updatemodule & updateconfig
+  // update module / config
   node_modules_missing: 'node_modules not found.',
   download_confirm: 'Download pre-built dependencies from repository? (y/n) ',
   extract_no_assets: 'Folder node_modules not found in archive.',
@@ -191,6 +191,10 @@ const MESSAGES = {
   tar_not_found: '"tar" command not found. Please ensure tar is installed (Linux/macOS/Termux) or use Git Bash on Windows.',
   update_confirm: 'This will replace your existing node_modules folder. Continue? (y/n) ',
   update_force: 'Overwriting node_modules (--force).',
+
+  // update subcommand helpers
+  update_usage: 'Usage: node epubcreator.js update <module|config> [--force]',
+  update_unknown_sub: 'Unknown update target: {sub}',
 
   // validate
   validate_no_epub: 'No .epub file found in builds/',
@@ -238,77 +242,115 @@ const MESSAGES = {
 
   // command unknown
   unknown_command: 'Unknown command: {cmd}',
-  usage_hint: 'Use: createdir | convertch | conv | split | merge | build | debug | import | updatemodule | updateconfig | settings | validate | --version',
+  maybe_you_mean: 'Maybe you mean: {suggestion}',
+  usage_hint: 'Use: createdir | convertch | conv | split | merge | build | debug | import | update | settings | validate | --version',
 
   // Help
   help_title: 'epubcreator — CLI for compiling directory to EPUB  (v{version})',
   help_commands: `
-  node epubcreator.js                    Open interactive menu
-  node epubcreator.js createdir           Create directory structure (interactive: textbook/comic/manga)
-  node epubcreator.js createdir comic     Create comic directory (LTR)
-  node epubcreator.js createdir manga     Create manga directory (RTL)
-  node epubcreator.js convertch           Convert .md -> .xhtml (default, looks in Markdowns/)
-  node epubcreator.js convertch img2xhtml Generate .xhtml from images (comic/manga mode)
-  node epubcreator.js convertch xhtml2md  Convert .xhtml -> .md
-  node epubcreator.js convertch docx2md   Convert .docx -> .md (split by ##)
-  node epubcreator.js conv ...            Alias for convertch
-  node epubcreator.js split <path>        Split .md file by heading ##
-  node epubcreator.js merge <path>        Merge .md files into one (reverse of split)
-  node epubcreator.js build               Build EPUB from current directory
-  node epubcreator.js debug               Watch changes, auto convertch + build
-  node epubcreator.js import              Import .epub file from current directory
-  node epubcreator.js updatemodule        Download/update node_modules from repo
-  node epubcreator.js updatemodule --force Update without confirmation
-  node epubcreator.js updateconfig        Download/update .epubcreator from repo (config branch)
-  node epubcreator.js settings            Interactive tool settings
-  node epubcreator.js validate            Validate latest EPUB with epubcheck
-  node epubcreator.js --version           Show version`,
+Usage:
+  node epubcreator.js [command] [subcommand] [options]
+
+  (no args)
+    Open interactive menu.
+
+  createdir [textbook|comic|manga]
+    Create directory structure. Interactive prompt when type is omitted.
+    textbook     Default, reflowable book
+    comic        LTR fixed-layout comic
+    manga        RTL fixed-layout manga
+
+  convertch [subcommand] [path] [options]
+  conv         Alias for convertch.
+    md2xhtml     (default)   Convert .md to .xhtml, reads Markdowns/
+    xhtml2md                 Convert .xhtml to .md
+    docx2md                  Convert .docx to .md, split by heading ##
+    img2xhtml                Generate .xhtml from images, comic/manga mode
+
+    Options for convertch / xhtml2md / docx2md:
+      --force, -f            Overwrite existing files
+      --output <path>        (docx2md, split, merge only) Output path
+
+    Options for img2xhtml:
+      --force, -f            Regenerate all XHTML
+      --regen-ord            Regenerate ord.txt (asks confirmation)
+      --fit=<mode>           contain | cover | width | height | none
+
+  split <path> [--output dir] [--force]
+    Split .md file by heading ##.
+
+  merge <path> [--output file] [--force]
+    Merge .md files into one (reverse of split).
+
+  build
+    Build EPUB from current directory.
+
+  debug
+    Watch changes, auto convert and build.
+
+  import [--force] [--output dir]
+    Import .epub file from current directory.
+
+  update <module|config> [--force]
+    module                   Download/update node_modules from repository
+    config                   Download/update .epubcreator from config branch
+
+  settings
+    Interactive tool settings.
+
+  validate
+    Validate latest EPUB in builds/ with epubcheck.
+
+  help, --help
+    Show this help.
+
+  --version, -v
+    Show version.`,
   help_structure: `
 Directory structure (textbook):
   ./
-  ├── config.txt          <- book metadata (required), type: textbook
-  ├── ord.txt             <- chapter order list (optional)
-  ├── Docs/               <- source .docx files (for docx2md)
-  ├── Markdowns/          <- source .md files (for convertch)
-  ├── EPUB/
-  │   ├── images/
-  │   │   └── cover.png   <- REQUIRED
-  │   ├── audiovideo/     <- optional
-  │   └── bab1.xhtml      <- chapters (any name, in EPUB/ root)
-  └── builds/
-      └── [folder-name].epub
+  |-- config.txt          <- book metadata (required), type: textbook
+  |-- ord.txt             <- chapter order list (optional)
+  |-- Docs/               <- source .docx files (for docx2md)
+  |-- Markdowns/          <- source .md files (for convertch)
+  |-- EPUB/
+  |   |-- images/
+  |   |   |-- cover.png   <- REQUIRED
+  |   |-- audiovideo/     <- optional
+  |   |-- bab1.xhtml      <- chapters (any name, in EPUB/ root)
+  |-- builds/
+      |-- [folder-name].epub
 
 Directory structure (comic/manga):
   ./
-  ├── config.txt          <- type: comic | manga, reading_direction: ltr | rtl
-  ├── ord.txt             <- optional: ordered list with * / ! / | alt
-  ├── EPUB/
-  │   ├── images/
-  │   │   ├── cover.jpg   <- REQUIRED
-  │   │   └── pages/
-  │   │       ├── ch1/    <- optional chapter grouping
-  │   │       │   ├── 0001.jpg
-  │   │       │   └── 0002.jpg
-  │   │       └── ch2/
-  │   │           └── 0001.jpg
-  │   ├── xhtmls/         <- auto-generated by "convertch img2xhtml"
-  │   ├── styles/         <- optional custom CSS
-  │   ├── about.xhtml     <- back-matter (reflowable) optional
-  │   └── audiovideo/     <- optional
-  └── builds/
-      └── [folder-name].epub`,
+  |-- config.txt          <- type: comic | manga, reading_direction: ltr | rtl
+  |-- ord.txt             <- optional: ordered list with * / ! / | alt
+  |-- EPUB/
+  |   |-- images/
+  |   |   |-- cover.jpg   <- REQUIRED
+  |   |   |-- pages/
+  |   |       |-- ch1/    <- optional chapter grouping
+  |   |       |   |-- 0001.jpg
+  |   |       |   |-- 0002.jpg
+  |   |       |-- ch2/
+  |   |           |-- 0001.jpg
+  |   |-- xhtmls/         <- auto-generated by "convertch img2xhtml"
+  |   |-- styles/         <- optional custom CSS
+  |   |-- about.xhtml     <- back-matter (reflowable) optional
+  |   |-- audiovideo/     <- optional
+  |-- builds/
+      |-- [folder-name].epub`,
   help_deps: `
 Note: make sure main dependencies are installed:
   npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4
 For DOCX feature:  npm install mammoth@1.6.0 (optional)
 For import feature: npm install adm-zip@0.5.10 xml2js@0.5.0 (optional)
 For validation: install epubcheck (https://github.com/w3c/epubcheck)
-  Or run "node epubcreator.js updatemodule" to download automatically.`,
+  Or run "node epubcreator.js update module" to download automatically.`,
 };
 
 // ─── Variabel global ──────────────────────────────────────────────────
 let interactiveMode = false;
-// Slot tunggal untuk menghentikan debug yang sedang aktif (TUI atau fallback).
 let _activeDebugStop = null;
 
 // ─── Emoji strip (safety net) ─────────────────────────────────────────
@@ -379,15 +421,57 @@ function logI18n(key, params = {}, type = 'info') {
   log(t(key, params), type);
 }
 
+// ─── Suggest command (for unknown-command hint) ───────────────────────
+const COMMAND_SUGGESTIONS = {
+  'updatemodule': 'update module',
+  'updateconfig': 'update config',
+};
+const KNOWN_COMMANDS = [
+  'createdir', 'convertch', 'conv', 'split', 'merge',
+  'build', 'debug', 'import', 'update', 'settings',
+  'validate', 'help',
+];
+
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const dp = Array.from({ length: m + 1 }, (_, i) => {
+    const row = new Array(n + 1).fill(0);
+    row[0] = i;
+    return row;
+  });
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+function suggestCommand(cmd) {
+  const lower = String(cmd || '').toLowerCase();
+  if (COMMAND_SUGGESTIONS[lower]) return COMMAND_SUGGESTIONS[lower];
+  let best = null;
+  let bestDist = Infinity;
+  for (const cc of KNOWN_COMMANDS) {
+    const d = levenshtein(lower, cc);
+    if (d < bestDist) { bestDist = d; best = cc; }
+  }
+  if (best && bestDist <= 3) return best;
+  return null;
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  TUI  (full-screen interactive menu, alternate-screen buffer)
 // ═══════════════════════════════════════════════════════════════════════
 
-// Save original console methods so we can bypass the TUI redirect.
 const _origConsoleLog = console.log.bind(console);
 const _origConsoleError = console.error.bind(console);
 
-// Strip ANSI escape codes to compute "visible length" of a line.
 function stripAnsi(s) {
   return String(s).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
 }
@@ -421,8 +505,7 @@ const MENU_DEF = [
       { key: 'v', label: 'Validate' },
       { key: 'i', label: 'Import' },
       { key: 's', label: 'Settings' },
-      { key: 'u', label: 'Upd modules' },
-      { key: 'c', label: 'Upd config' },
+      { key: 'u', label: 'Update...' },
     ],
   },
 ];
@@ -432,6 +515,7 @@ const TUI = {
   suspended: false,
   executing: false,
   debugActive: false,
+  updateSubmenu: false,
   cols: 80,
   rows: 24,
   logs: [],
@@ -475,8 +559,8 @@ const TUI = {
 
     try { rl.close(); } catch (_) {}
 
-    process.stdout.write('\x1b[?1049h');   // alt screen
-    process.stdout.write('\x1b[?25l');     // hide cursor
+    process.stdout.write('\x1b[?1049h');
+    process.stdout.write('\x1b[?25l');
     process.stdout.write('\x1b[H\x1b[2J');
 
     try { process.stdin.setRawMode(true); } catch (_) {}
@@ -510,8 +594,8 @@ const TUI = {
     }
 
     try { process.stdin.setRawMode(false); } catch (_) {}
-    process.stdout.write('\x1b[?25h');     // show cursor
-    process.stdout.write('\x1b[?1049l');   // leave alt screen
+    process.stdout.write('\x1b[?25h');
+    process.stdout.write('\x1b[?1049l');
 
     if (this.onExit) this.onExit();
   },
@@ -652,6 +736,9 @@ const TUI = {
   },
 
   buildHelpLine() {
+    if (this.updateSubmenu) {
+      return ` ${c.yellow}Update: [m]odule / [c]onfig / Esc cancel${c.reset}`;
+    }
     if (this.debugActive) {
       return ` ${c.yellow}Debug active — q stop   PgUp/PgDn scroll   Ctrl+C exit${c.reset}`;
     }
@@ -668,7 +755,11 @@ const TUI = {
       return;
     }
 
-    // Debug mode: tangkap q untuk stop, Ctrl+C untuk kill, PgUp/PgDn untuk scroll.
+    if (this.updateSubmenu) {
+      this.handleUpdateSubmenuInput(str);
+      return;
+    }
+
     if (this.debugActive) {
       this.handleDebugInput(str);
       return;
@@ -706,7 +797,7 @@ const TUI = {
 
       if (lower === 'q') { this.exit(); return; }
       if (lower === 'h') {
-        this.pushLog(`${c.cyan}Help:${c.reset} use Up/Down + Enter, or press shortcut keys directly (1-9, b, d, v, i, s, u, c). q quits. PgUp/PgDn scrolls log.`);
+        this.pushLog(`${c.cyan}Help:${c.reset} use Up/Down + Enter, or press shortcut keys directly (1-9, b, d, v, i, s, u). q quits. PgUp/PgDn scrolls log.`);
         return;
       }
 
@@ -722,13 +813,65 @@ const TUI = {
     }
   },
 
+  handleUpdateSubmenuInput(str) {
+    for (let i = 0; i < str.length; i++) {
+      const ch = str[i];
+
+      if (ch === '\x03') {
+        this.updateSubmenu = false;
+        this.exit();
+        return;
+      }
+      if (ch === '\x1b') {
+        if (str[i + 1] === '[') { i += 2; continue; }
+        this.updateSubmenu = false;
+        this.render();
+        return;
+      }
+      const lower = ch.toLowerCase();
+      if (lower === 'm') {
+        this.updateSubmenu = false;
+        this.runUpdateAction('module');
+        return;
+      }
+      if (lower === 'c') {
+        this.updateSubmenu = false;
+        this.runUpdateAction('config');
+        return;
+      }
+      if (lower === 'q') {
+        this.updateSubmenu = false;
+        this.render();
+        return;
+      }
+    }
+  },
+
+  async runUpdateAction(which) {
+    if (this.executing) return;
+    this.executing = true;
+    this.pushLog(`${c.cyan}> Update ${which}${c.reset}`);
+    this.suspend();
+    try {
+      if (which === 'module') {
+        await doUpdateModule(false);
+      } else {
+        await doUpdateConfig(false);
+      }
+    } catch (err) {
+      this.pushLog(`${c.red}Error: ${err.message}${c.reset}`);
+    } finally {
+      this.executing = false;
+      this.resume();
+    }
+  },
+
   handleDebugInput(str) {
     let i = 0;
     while (i < str.length) {
       const ch = str[i];
 
       if (ch === '\x03') {
-        // Ctrl+C: stop debug dulu (biar watcher ditutup), lalu exit TUI.
         if (_activeDebugStop) _activeDebugStop();
         this.exit();
         return;
@@ -741,7 +884,6 @@ const TUI = {
         const code = str[i + 2];
         if (code === '5' && str[i + 3] === '~') { this.scroll(-1); i += 4; continue; }
         if (code === '6' && str[i + 3] === '~') { this.scroll(1); i += 4; continue; }
-        // Telan escape sequence lain (arrow, dsb) tanpa aksi.
         i += 3;
         continue;
       }
@@ -763,8 +905,6 @@ const TUI = {
         return;
       }
       if (ch === '\x03') {
-        // Fix bug: resolve dengan string kosong, bukan null,
-        // supaya caller tidak crash saat memanggil .toLowerCase()/.trim().
         this.promptState = null;
         this.render();
         p.resolve('');
@@ -831,9 +971,13 @@ const TUI = {
       return;
     }
 
-    // Actions that spawn subprocesses (tar) or that need a normal
-    // terminal for interactive input should suspend the TUI.
-    const needsSuspend = ['1', '2', '3', 'u', 'c'];
+    if (key === 'u') {
+      this.updateSubmenu = true;
+      this.render();
+      return;
+    }
+
+    const needsSuspend = ['1', '2', '3'];
     if (needsSuspend.includes(key)) {
       this.suspend();
       try {
@@ -848,8 +992,6 @@ const TUI = {
   },
 
   async runDebugInTui() {
-    // Opsi B: TUI TIDAK di-suspend. Log debug masuk ke log panel TUI
-    // lewat console.log redirect. User tekan q untuk stop.
     this.debugActive = true;
     this.pushLog(`${c.yellow}Debug mode active. Press q to stop, Ctrl+C to exit.${c.reset}`);
     this.render();
@@ -887,39 +1029,43 @@ console.error = function (...args) {
 //  End of TUI
 // ═══════════════════════════════════════════════════════════════════════
 
-// ─── Cek dependensi ──────────────────────────────────────────────────
-function checkDependencies() {
-  try {
-    require.resolve('archiver');
-  } catch (_) {
-    console.error(t('missing_dep', { mod: 'archiver', version: '5.3.0' }));
-    process.exit(1);
-  }
+// ─── Cek dependensi (non-fatal) ──────────────────────────────────────
+// Hasil: { ok: true, deps } | { ok: false, missing: [{ mod, version, old? }] }
+function tryCheckDependencies() {
+  const missing = [];
 
-  let marked;
+  try { require.resolve('archiver'); }
+  catch (_) { missing.push({ mod: 'archiver', version: '5.3.0' }); }
+
   try {
-    marked = require('marked');
-    if (typeof marked.parse !== 'function') {
-      console.error(t('marked_old'));
-      process.exit(1);
+    const m = require('marked');
+    if (typeof m.parse !== 'function') {
+      missing.push({ mod: 'marked', version: '4.0.0', old: true });
     }
   } catch (_) {
-    console.error(t('missing_dep', { mod: 'marked', version: '4.0.0' }));
-    process.exit(1);
+    missing.push({ mod: 'marked', version: '4.0.0' });
   }
 
-  try {
-    require('turndown');
-  } catch (_) {
-    console.error(t('missing_dep', { mod: 'turndown', version: '7.2.4' }));
-    process.exit(1);
-  }
+  try { require.resolve('turndown'); }
+  catch (_) { missing.push({ mod: 'turndown', version: '7.2.4' }); }
+
+  if (missing.length > 0) return { ok: false, missing };
 
   return {
-    archiver: require('archiver'),
-    marked: require('marked'),
-    TurndownService: require('turndown'),
+    ok: true,
+    deps: {
+      archiver: require('archiver'),
+      marked: require('marked'),
+      TurndownService: require('turndown'),
+    },
   };
+}
+
+function printMissingDeps(missing) {
+  for (const m of missing) {
+    if (m.old) console.error(t('marked_old'));
+    else console.error(t('missing_dep', { mod: m.mod, version: m.version }));
+  }
 }
 
 // ─── Utilitas ──────────────────────────────────────────────────────────
@@ -1707,42 +1853,44 @@ function extractTarGz(tarballPath, destDir = '.', stripComponents = 0, srcPath =
       return;
     }
 
-    let topFolder;
+    let entries;
     try {
-      const listOutput = execSync(`tar -tf "${tarballPath}" | head -1`, { encoding: 'utf8' });
-      const firstLine = listOutput.trim();
-      if (!firstLine) throw new Error('Archive is empty or invalid');
-      topFolder = firstLine.split('/')[0];
-      if (!topFolder) throw new Error('Cannot determine top-level folder');
+      const out = execFileSync('tar', ['-tzf', tarballPath], { encoding: 'utf8' });
+      entries = out.split('\n').map(s => s.trim()).filter(Boolean);
     } catch (err) {
       reject(new Error(`Failed to list archive: ${err.message}`));
       return;
     }
+    if (entries.length === 0) {
+      reject(new Error('Archive is empty or invalid'));
+      return;
+    }
 
+    const topFolder = entries[0].split('/')[0];
+    if (!topFolder) {
+      reject(new Error('Cannot determine top-level folder'));
+      return;
+    }
+
+    let targetArg = null;
     if (srcPath) {
-      const checkCmd = `tar -tf "${tarballPath}" | grep -q "^${topFolder}/${srcPath}"`;
-      try {
-        execSync(checkCmd, { stdio: 'ignore' });
-      } catch (_) {
+      const needle = `${topFolder}/${srcPath}`;
+      const found = entries.some(e => e === needle || e.startsWith(needle + '/'));
+      if (!found) {
         reject(new Error(t('extract_no_assets')));
         return;
       }
-      const fullSrc = `${topFolder}/${srcPath}`;
-      const cmd = `tar -xzf "${tarballPath}" --strip-components=${stripComponents} -C "${destDir}" "${fullSrc}"`;
-      try {
-        execSync(cmd, { stdio: 'inherit' });
-        resolve();
-      } catch (err) {
-        reject(err);
-      }
-    } else {
-      const cmd = `tar -xzf "${tarballPath}" --strip-components=${stripComponents} -C "${destDir}"`;
-      try {
-        execSync(cmd, { stdio: 'inherit' });
-        resolve();
-      } catch (err) {
-        reject(err);
-      }
+      targetArg = needle;
+    }
+
+    const args = ['-xzf', tarballPath, `--strip-components=${stripComponents}`, '-C', destDir];
+    if (targetArg) args.push(targetArg);
+
+    try {
+      execFileSync('tar', args, { stdio: 'inherit' });
+      resolve();
+    } catch (err) {
+      reject(err);
     }
   });
 }
@@ -3104,13 +3252,6 @@ function buildChapterTitleMap(epubDir, chapters) {
 }
 
 // ─── Debug ─────────────────────────────────────────────────────────────
-// Catatan desain:
-//   - cmdDebug dan turunannya TIDAK lagi menerima param onStop.
-//   - Mereka mengembalikan Promise yang resolve saat _activeDebugStop() dipanggil.
-//   - Handler SIGINT manual dihapus, sehingga Ctrl+C (SIGINT) = kill program
-//     secara default saat di CLI / fallback dengan cooked mode.
-//   - Selama debug di TUI, raw mode aktif, sehingga Ctrl+C datang sebagai byte
-//     \x03; TUI.handleDebugInput yang menerjemahkannya (stop debug + exit TUI).
 async function cmdDebug(archiver, marked) {
   const cwd = process.cwd();
   const configPath = path.join(cwd, 'config.txt');
@@ -4315,15 +4456,15 @@ extra_titles: ${d.extraTitles.join(', ')}
 `;
 }
 
-// ─── Command: updatemodule ────────────────────────────────────────────
-async function cmdUpdateModule(force = false) {
+// ─── Command: update module / config ───────────────────────────────────
+// Fungsi inti tanpa prompt & tanpa closeRL — bisa dipanggil dari mana saja.
+async function doUpdateModule(force = false) {
   const nodeModulesDir = path.join(process.cwd(), 'node_modules');
   if (fs.existsSync(nodeModulesDir) && !force) {
     const ans = await question(t('update_confirm'));
     if ((ans || '').toLowerCase() !== 'y') {
       logI18n('cancelled', {}, 'warn');
-      closeRL();
-      return;
+      return false;
     }
   } else if (fs.existsSync(nodeModulesDir) && force) {
     logI18n('update_force', {}, 'info');
@@ -4333,21 +4474,20 @@ async function cmdUpdateModule(force = false) {
     const url = 'https://github.com/YogabyAllwaysever/epubcreator.js/archive/refs/heads/modules.tar.gz';
     await downloadAndExtract(url, process.cwd(), 'node_modules', 1);
     logI18n('extract_success', {}, 'success');
+    return true;
   } catch (err) {
     logI18n('extract_failed', { error: err.message }, 'error');
+    return false;
   }
-  closeRL();
 }
 
-// ─── Command: updateconfig ─────────────────────────────────────────────
-async function cmdUpdateConfig(force = false) {
+async function doUpdateConfig(force = false) {
   const configDir = path.join(process.cwd(), TOOL_DIR);
   if (fs.existsSync(configDir) && !force) {
     const ans = await question(t('updateconfig_confirm'));
     if ((ans || '').toLowerCase() !== 'y') {
       logI18n('cancelled', {}, 'warn');
-      closeRL();
-      return;
+      return false;
     }
   } else if (fs.existsSync(configDir) && force) {
     logI18n('updateconfig_force', {}, 'info');
@@ -4357,9 +4497,20 @@ async function cmdUpdateConfig(force = false) {
     const url = 'https://github.com/YogabyAllwaysever/epubcreator.js/archive/refs/heads/config.tar.gz';
     await downloadAndExtract(url, process.cwd(), '.epubcreator', 1);
     logI18n('updateconfig_success', {}, 'success');
+    return true;
   } catch (err) {
     logI18n('updateconfig_failed', { error: err.message }, 'error');
+    return false;
   }
+}
+
+async function cmdUpdateModule(force = false) {
+  await doUpdateModule(force);
+  closeRL();
+}
+
+async function cmdUpdateConfig(force = false) {
+  await doUpdateConfig(force);
   closeRL();
 }
 
@@ -4488,8 +4639,7 @@ function printMenu() {
   console.log(`    ${c.bold}v${c.reset}  Validate`);
   console.log(`    ${c.bold}i${c.reset}  Import EPUB`);
   console.log(`    ${c.bold}s${c.reset}  Settings`);
-  console.log(`    ${c.bold}u${c.reset}  Update module`);
-  console.log(`    ${c.bold}c${c.reset}  Update config`);
+  console.log(`    ${c.bold}u${c.reset}  Update (module / config)`);
   console.log('');
   console.log(`    ${c.bold}h${c.reset}  Help      ${c.bold}q${c.reset}  Quit`);
   console.log('');
@@ -4519,12 +4669,17 @@ async function handleMenuChoice(choice, deps) {
       break;
     }
     case 'b': await cmdBuild(archiver); break;
-    // 'd' (debug) sekarang ditangani eksplisit oleh TUI.executeAction / runMenuFallback.
     case 'v': await cmdValidate(); break;
     case 'i': await cmdImport([]); break;
     case 's': await cmdSettings(); break;
-    case 'u': await cmdUpdateModule(false); break;
-    case 'c': await cmdUpdateConfig(false); break;
+    case 'u': {
+      const p = await question(`  ${c.gray}Update: [m]odule / [c]onfig?${c.reset} `);
+      const ans = (p || '').trim().toLowerCase();
+      if (ans === 'm' || ans === 'module') await cmdUpdateModule(false);
+      else if (ans === 'c' || ans === 'config') await cmdUpdateConfig(false);
+      else log('Cancelled.', 'warn');
+      break;
+    }
     case 'h': printHelp(); break;
     default:
       log(`Unknown option: "${choice}". Type "h" for help.`, 'warn');
@@ -4532,10 +4687,7 @@ async function handleMenuChoice(choice, deps) {
 }
 
 // ─── Fallback debug runner ─────────────────────────────────────────────
-// Fallback TIDAK punya raw-mode TUI. Jadi kita pinjam raw mode sementara
-// untuk mendeteksi satu tombol 'q', lalu restore rl setelah selesai.
 async function runDebugFallback(deps) {
-  // Lepas rl supaya tidak merebut stdin dari listener raw-mode kita.
   try { rl.close(); } catch (_) {}
   try { process.stdin.setRawMode(true); } catch (_) {}
   process.stdin.resume();
@@ -4551,8 +4703,6 @@ async function runDebugFallback(deps) {
         process.stdin.removeListener('data', handler);
         resolve('stop');
       } else if (str.includes('\x03')) {
-        // Ctrl+C di raw mode tidak jadi SIGINT. Kita berhentikan debug
-        // lalu kill process (agar konsisten dengan "Ctrl+C = kill").
         process.stdin.removeListener('data', handler);
         if (_activeDebugStop) _activeDebugStop();
         // eslint-disable-next-line no-process-exit
@@ -4572,7 +4722,6 @@ async function runDebugFallback(deps) {
     }),
   ]);
 
-  // Restore: matikan raw mode, hidupkan lagi rl untuk menu loop.
   try { process.stdin.setRawMode(false); } catch (_) {}
   rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 }
@@ -4611,7 +4760,6 @@ async function runMenuTUI(deps) {
   TUI.init(deps);
 
   if (!TUI.enter()) {
-    // TUI couldn't activate — restore rl and fall back.
     try { rl.close(); } catch (_) {}
     rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     return await runMenuFallback(deps);
@@ -4638,16 +4786,26 @@ async function main() {
     return;
   }
 
-  // ─── Tanpa argumen → menu interaktif ──────────────────────────────
+  // ─── Tanpa argumen → menu interaktif (auto-fix deps) ──────────────
   if (!command) {
     interactiveMode = true;
-    let deps;
-    try {
-      deps = checkDependencies();
-    } catch (_) {
-      process.exit(1);
+
+    let result = tryCheckDependencies();
+    if (!result.ok) {
+      log('Dependencies missing. Downloading pre-built node_modules...', 'info');
+      const ok = await doUpdateModule(false);
+      if (!ok) {
+        printMissingDeps(result.missing);
+        process.exit(1);
+      }
+      result = tryCheckDependencies();
+      if (!result.ok) {
+        printMissingDeps(result.missing);
+        process.exit(1);
+      }
     }
 
+    const deps = result.deps;
     TUI.cols = process.stdout.columns || 80;
     TUI.rows = process.stdout.rows || 24;
 
@@ -4665,14 +4823,20 @@ async function main() {
     await cmdCreateDir(args.slice(1));
     return;
   }
-  if (command === 'updatemodule') {
+  if (command === 'update') {
+    const sub = args[1];
     const force = args.includes('--force') || args.includes('-f');
-    await cmdUpdateModule(force);
-    return;
-  }
-  if (command === 'updateconfig') {
-    const force = args.includes('--force') || args.includes('-f');
-    await cmdUpdateConfig(force);
+    if (sub === 'module') { await cmdUpdateModule(force); return; }
+    if (sub === 'config') { await cmdUpdateConfig(force); return; }
+    if (sub) {
+      const suggestion = suggestCommand(sub);
+      logI18n('update_unknown_sub', { sub }, 'error');
+      if (suggestion && suggestion.startsWith('update ')) {
+        log(t('maybe_you_mean', { suggestion: `node epubcreator.js ${suggestion}` }), 'info');
+      }
+    }
+    log(t('update_usage'), 'error');
+    try { rl.close(); } catch (_) {}
     return;
   }
   if (command === 'import') {
@@ -4689,13 +4853,12 @@ async function main() {
   }
 
   // ─── Perintah dengan dependensi ──────────────────────────────────
-  let deps;
-  try {
-    deps = checkDependencies();
-  } catch (_) {
+  const depResult = tryCheckDependencies();
+  if (!depResult.ok) {
+    printMissingDeps(depResult.missing);
     process.exit(1);
   }
-  const { archiver, marked, TurndownService } = deps;
+  const { archiver, marked, TurndownService } = depResult.deps;
 
   if (command === 'convertch' || command === 'conv') {
     const sub = args[1] || 'md2xhtml';
@@ -4742,13 +4905,16 @@ async function main() {
   }
 
   if (command === 'debug') {
-    // Di mode CLI murni, debug berjalan sampai user menekan Ctrl+C
-    // (SIGINT default = kill proses). _activeDebugStop tidak pernah dipanggil.
     await cmdDebug(archiver, marked);
     return;
   }
 
+  // Unknown command → print suggestion
   logI18n('unknown_command', { cmd: command }, 'error');
+  const suggestion = suggestCommand(command);
+  if (suggestion) {
+    log(t('maybe_you_mean', { suggestion: `node epubcreator.js ${suggestion}` }), 'info');
+  }
   logI18n('usage_hint', {}, 'info');
   try { rl.close(); } catch (_) {}
 }
