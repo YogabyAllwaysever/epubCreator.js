@@ -6,22 +6,32 @@ CLI tool for compiling a directory into an EPUB ebook
 
 ---
 
+## 📖 Background
+
+This started as a personal workaround. I was publishing a Light Novel on Google Play Books and building the `.epub` directly on Android using an app called ZisE — simple enough, but the ads were relentless and the premium nagging got in the way. So I asked DeepSeek to help turn the workflow into a Node.js script instead, and `epubcreator.js` grew from there. The early versions were all flags and arguments; now it has a full TUI, converters, an importer, and a debug watcher.
+
+A note on scope: some features here haven't been discussed with DeepSeek yet — they're still as-is from what I originally wanted, so they may not be fully polished or thoroughly tested.
+
+That said, I'm pretty proud of the result. Almost every book I've built with this script scores an average of **100** on EPUB validator sites — metadata, code, and accessibility included. This tool is aimed at **EPUB developers working on standard, simple books** and **indie writers** who want a straightforward build flow without setting up a whole toolchain.
+
+---
+
 ## ✨ Features
 
 - 🏗️ Build EPUB from a structured directory
 - 📂 Create directory structure with all necessary files (config, template, dependencies)
-- 🎛️ **Interactive full-screen TUI** – run without arguments to get an ANSI-styled menu with arrow-key navigation
-- 📖 **Three book types** – `textbook` (reflowable), `comic` (fixed-layout LTR), `manga` (fixed-layout RTL)
-- 🖼️ **Image → XHTML generation** – auto-generate page XHTML from comic/manga images
-- ↔️ **Auto double-spread detection** – detects wide landscape images and marks them as `page-spread-center`
+- 🎛️ **Interactive full-screen TUI** — run without arguments to get an ANSI-styled menu with arrow-key navigation
+- 📖 **Three book types** — `textbook` (reflowable), `comic` (fixed-layout LTR), `manga` (fixed-layout RTL)
+- 🖼️ **Image → XHTML generation** — auto-generate page XHTML from comic/manga images
+- ↔️ **Auto double-spread detection** — detects wide landscape images and marks them as `page-spread-center`
 - 🔄 Convert Markdown (.md) to XHTML (.xhtml) and vice versa
 - 📄 Convert DOCX (.docx) to Markdown (.md) with smart heading detection
 - ✂️ **Split** Markdown files by headings (`##`) into multiple files
-- 🔔 **Merge** multiple Markdown files into one (reverse of split)
-- 📥 **Import existing EPUB** – extract chapters, metadata, cover, and media into the project structure (auto-detects comic/manga fixed-layout)
-- 🔍 **Debug mode** – watch `Markdowns/` (textbook) or `EPUB/images/pages/` (comic/manga) and auto-rebuild; runs inside the TUI when launched interactively
-- 📦 **Auto-download dependencies** – fetch and extract pre-built `node_modules` from the repository (also runs automatically on first launch of the interactive menu)
-- ⚙️ **Tool settings** – interactive configuration (watch delay, auto-build, overwrite policy, default type)
+- 🔗 **Merge** multiple Markdown files into one (reverse of split)
+- 📥 **Import existing EPUB** — extract chapters, metadata, cover, and media into the project structure (auto-detects comic/manga fixed-layout)
+- 🔍 **Debug mode** — watch `Markdowns/` (textbook) or `EPUB/images/pages/` (comic/manga) and auto-rebuild; runs inside the TUI when launched interactively
+- 📦 **Auto-download dependencies** — fetch and extract pre-built `node_modules` from the repository (also runs automatically on first launch of the interactive menu)
+- ⚙️ **Tool settings** — interactive configuration (watch delay, auto-build, overwrite policy, default type)
 - 📋 Chapter/page order control via optional `ord.txt` (with extended format for comic/manga)
 - ✅ **Validate** built EPUBs with `epubcheck`
 - 🎨 Automatic cover, TOC, and metadata generation
@@ -40,7 +50,7 @@ cd epubcreator.js
 
 Or download as ZIP.
 
-The tool itself is self-contained – you only need Node.js. Dependencies and configuration files are downloaded automatically when you run `createdir`, `update module`, or on the **first interactive launch** of `node epubcreator.js`.
+The tool itself is self-contained — you only need Node.js. Dependencies and configuration files are downloaded automatically when you run `createdir`, `update module`, or on the **first interactive launch** of `node epubcreator.js`.
 
 **Main dependencies** (auto-downloaded via `update module`):
 - archiver@5.3.0
@@ -48,8 +58,8 @@ The tool itself is self-contained – you only need Node.js. Dependencies and co
 - turndown@7.2.4
 
 **Optional dependencies** (for extra features):
-- mammoth@1.6.0 – DOCX conversion
-- adm-zip@0.5.10 & xml2js@0.5.0 – EPUB import
+- mammoth@1.6.0 — DOCX conversion
+- adm-zip@0.5.10 & xml2js@0.5.0 — EPUB import
 
 If you prefer to install manually:
 
@@ -60,6 +70,33 @@ npm install mammoth@1.6.0 adm-zip@0.5.10 xml2js@0.5.0
 ```
 
 Or run `node epubcreator.js update module` to download everything automatically.
+
+### Recommended: per-project setup
+
+Clone the repo once as a script source, then **copy `epubcreator.js` from the cloned repo into each EPUB project directory**. I suggest putting projects under `~/projects/epubs/{project-name}/`, so each book gets its own folder and doesn't get mixed up with the source repo.
+
+```bash
+# clone the repo once as a script source
+git clone https://github.com/YogabyAllwaysever/epubcreator.js.git ~/tools/epubcreator.js
+
+# set up an EPUB project directory
+mkdir -p ~/projects/epubs/nama-proyek
+cp ~/tools/epubcreator.js/epubcreator.js ~/projects/epubs/nama-proyek/
+
+# go into the project and run it
+cd ~/projects/epubs/nama-proyek
+node epubcreator.js createdir
+```
+
+Almost all operations in the script use `process.cwd()`, so it works most predictably when run from inside the project directory that contains `config.txt`, `ord.txt`, `Markdowns/`, and `EPUB/`. By keeping a copy of `epubcreator.js` there, you just `cd` into the folder and run `node epubcreator.js` without remembering any script paths.
+
+To update the script later, copy the file again into the project directory:
+
+```bash
+cp ~/tools/epubcreator.js/epubcreator.js ~/projects/epubs/nama-proyek/
+```
+
+The cloned repo stays clean as a script source, and each EPUB project has its own working directory.
 
 ---
 
@@ -120,33 +157,33 @@ node epubcreator.js              # interactive menu (TUI)
 ### Command Options
 
 **Global options** (apply to most commands):
-- `--force, -f` – Overwrite existing files without asking.
+- `--force, -f` — Overwrite existing files without asking.
 
 **Options for `convertch img2xhtml`:**
-- `--regen-ord` – Regenerate `ord.txt` from scratch (asks for confirmation).
-- `--force, -f` – Force regenerate all XHTML files.
-- `--fit=<mode>` – Override `fit_mode` (`contain`, `cover`, `width`, `height`, `none`).
+- `--regen-ord` — Regenerate `ord.txt` from scratch (asks for confirmation).
+- `--force, -f` — Force regenerate all XHTML files.
+- `--fit=<mode>` — Override `fit_mode` (`contain`, `cover`, `width`, `height`, `none`).
 
 **Options for `convertch docx2md`:**
-- `--output <dir>` – Output directory (default: `Markdowns/fromdocx`).
-- `--force, -f` – Overwrite existing files.
-- `--no-images` – Suppress warning about unsupported image extraction (images are ignored anyway).
-- `--nosplit, -n` – Do not split by headings; output a single `.md` per `.docx`.
+- `--output <dir>` — Output directory (default: `Markdowns/fromdocx`).
+- `--force, -f` — Overwrite existing files.
+- `--no-images` — Suppress warning about unsupported image extraction (images are ignored anyway).
+- `--nosplit, -n` — Do not split by headings; output a single `.md` per `.docx`.
 
 **Options for `split`:**
-- `--output <dir>` – Output directory (default: `Markdowns/split`).
-- `--force, -f` – Overwrite existing files.
+- `--output <dir>` — Output directory (default: `Markdowns/split`).
+- `--force, -f` — Overwrite existing files.
 
 **Options for `merge`:**
-- `--output <file>` – Output file path (default: `merged.md`).
-- `--force, -f` – Overwrite existing file.
+- `--output <file>` — Output file path (default: `merged.md`).
+- `--force, -f` — Overwrite existing file.
 
 **Options for `import`:**
-- `--force, -f` – Overwrite existing files.
-- `--output <dir>` – Target directory (default: current directory).
+- `--force, -f` — Overwrite existing files.
+- `--output <dir>` — Target directory (default: current directory).
 
 **Options for `update module` / `update config`:**
-- `--force, -f` – Skip confirmation and overwrite without asking.
+- `--force, -f` — Skip confirmation and overwrite without asking.
 
 ---
 
@@ -160,14 +197,14 @@ On **first run** in a fresh project, if `node_modules` is missing, the TUI boot 
   epubcreator v4.1.0
   Arrow keys to navigate, Enter to select, q to quit.
 
-  ──────────── CREATE ────────────
+  ───────────── CREATE ─────────────
   [1] Textbook        [2] Comic LTR      [3] Manga RTL
 
-  ──────────── CONVERT ───────────
+  ───────────── CONVERT ────────────
   [4] MD>XHTML        [5] XHTML>MD       [6] DOCX>MD
   [7] IMG>XHTML       [8] Split MD       [9] Merge MD
 
-  ────────── BUILD & MANAGE ──────
+  ────────── BUILD & MANAGE ─────────
   [b] Build EPUB      [d] Debug          [v] Validate
   [i] Import          [s] Settings       [u] Update...
 
@@ -199,8 +236,8 @@ On **first run** in a fresh project, if `node_modules` is missing, the TUI boot 
 - All output is also written to a **fallback numeric menu** when stdout/stdin isn't a TTY (e.g. piped, small terminal, `NO_TUI=1`). After each action in fallback mode, the menu pauses for 3 seconds.
 
 Environment variables:
-- `NO_COLOR` – disable ANSI colors
-- `NO_TUI` – force the fallback numeric menu
+- `NO_COLOR` — disable ANSI colors
+- `NO_TUI` — force the fallback numeric menu
 
 ---
 
@@ -261,7 +298,7 @@ Environment variables:
 
 ## 📝 Configuration Files
 
-### `config.txt` – Book Metadata
+### `config.txt` — Book Metadata
 
 **Textbook mode:**
 
@@ -355,7 +392,7 @@ heading2 = 18
 heading3 = 14
 ```
 
-### `.epubcreator/settings.txt` – Tool Settings
+### `.epubcreator/settings.txt` — Tool Settings
 
 This file is automatically created when you run `createdir` or `settings`.
 
@@ -366,12 +403,12 @@ overwrite_policy = ask
 default_type = textbook
 ```
 
-- **watch_delay** – Debounce delay (ms) for `debug` mode.
-- **auto_build** – If `true`, automatically run `build` after a successful `convertch`.
-- **overwrite_policy** – How to handle existing files: `ask`, `force`, or `skip`.
-- **default_type** – Default type for `createdir` when run interactively (`textbook`, `comic`, or `manga`).
+- **watch_delay** — Debounce delay (ms) for `debug` mode.
+- **auto_build** — If `true`, automatically run `build` after a successful `convertch`.
+- **overwrite_policy** — How to handle existing files: `ask`, `force`, or `skip`.
+- **default_type** — Default type for `createdir` when run interactively (`textbook`, `comic`, or `manga`).
 
-### `ord.txt` – Chapter / Page Order
+### `ord.txt` — Chapter / Page Order
 
 **Textbook format:**
 
@@ -475,9 +512,9 @@ If `ord.txt` doesn't exist, chapters/pages are sorted naturally (numeric-aware).
    ```
    This creates `EPUB/xhtmls/` and populates `ord.txt`.
 
-4. **Edit `config.txt`** – set title, author, reading direction, spread mode, etc.
+4. **Edit `config.txt`** — set title, author, reading direction, spread mode, etc.
 
-5. **Edit `ord.txt`** if needed – add `*` for double spreads, `!` for singles, `| alt-text` for page titles.
+5. **Edit `ord.txt`** if needed — add `*` for double spreads, `!` for singles, `| alt-text` for page titles.
 
 6. **Build:**
    ```bash
@@ -496,11 +533,11 @@ The builder will:
 
 ## 🔍 Debug Mode (watch & auto-rebuild)
 
-**Textbook mode** – watches `Markdowns/`:
+**Textbook mode** — watches `Markdowns/`:
 1. Converts all `.md` files to `.xhtml` (force overwrite)
 2. Builds the EPUB
 
-**Comic / Manga mode** – watches `EPUB/images/pages/`:
+**Comic / Manga mode** — watches `EPUB/images/pages/`:
 1. Syncs XHTML from images
 2. Builds the EPUB
 
@@ -526,11 +563,11 @@ The `import` command extracts an existing `.epub` file into the project structur
    - `rendition:layout: prepaginated` → **comic/manga** import
    - otherwise → **textbook** import
 4. Extracts:
-   - **Metadata** – title, author, language, identifier, date, publisher, description, subjects, series info, contributors.
-   - **Chapters/Pages** – all XHTML files in the spine.
-   - **Cover image** – saved to `EPUB/images/`.
-   - **Other images** – saved to `EPUB/images/`.
-   - **Audio/Video** – saved to `EPUB/audiovideo/`.
+   - **Metadata** — title, author, language, identifier, date, publisher, description, subjects, series info, contributors.
+   - **Chapters/Pages** — all XHTML files in the spine.
+   - **Cover image** — saved to `EPUB/images/`.
+   - **Other images** — saved to `EPUB/images/`.
+   - **Audio/Video** — saved to `EPUB/audiovideo/`.
 5. Generates `config.txt` and `ord.txt` automatically.
 6. For comic/manga: page images are extracted to `EPUB/images/pages/`, XHTML is regenerated, and `ord.txt` reflects the original spine order.
 
@@ -604,9 +641,9 @@ The `build` command:
    - **Comic/Manga** → syncs XHTML from images, collects pages via `ord.txt`, detects spreads.
 3. Detects cover image (`cover.*` in `EPUB/images/`).
 4. Generates:
-   - `volume.opf` – EPUB package file (with `rendition:*` and accessibility metadata)
-   - `toc.xhtml` – Table of Contents (nested for comic chapters)
-   - `cover.xhtml` – Cover page
+   - `volume.opf` — EPUB package file (with `rendition:*` and accessibility metadata)
+   - `toc.xhtml` — Table of Contents (nested for comic chapters)
+   - `cover.xhtml` — Cover page
    - `META-INF/container.xml`
 5. Packages everything into `builds/[folder-name].epub`.
 
@@ -730,12 +767,12 @@ node epubcreator.js validate
 
 ## 📦 Dependencies
 
-- `archiver` (5.3.0) – ZIP packaging
-- `marked` (4.0.0) – Markdown parsing
-- `turndown` (7.2.4) – XHTML to Markdown conversion
-- `mammoth` (1.6.0) – DOCX to HTML conversion (optional)
-- `adm-zip` (0.5.10) – EPUB import (optional)
-- `xml2js` (0.5.0) – OPF parsing for import (optional)
+- `archiver` (5.3.0) — ZIP packaging
+- `marked` (4.0.0) — Markdown parsing
+- `turndown` (7.2.4) — XHTML to Markdown conversion
+- `mammoth` (1.6.0) — DOCX to HTML conversion (optional)
+- `adm-zip` (0.5.10) — EPUB import (optional)
+- `xml2js` (0.5.0) — OPF parsing for import (optional)
 
 All dependencies can be installed manually via `npm install` or automatically via `update module`.
 
