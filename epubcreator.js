@@ -2,41 +2,68 @@
 /**
  * epubcreator.js — Node CLI untuk kompilasi direktori ke EPUB
  *
- * Versi: 4.1.0 (nested help + auto-fix deps + `update module|config`)
+ * Versi: 4.2.0
+ *   - Security: import zip-slip guard, symlink cycle protection, ord.txt path guard
+ *   - Bugfix: parseConfig "#" in value, epubcheck detection, Termux debug warning
+ *   - New: stats, preview (HTTP server + epub.js), incremental convertch
+ *   - New: --dry-run, --quiet, --verbose, --json global flags
+ *   - New: sanitize-html integration (optional fallback)
  *
  *  Copyright (C) 2026 YogabyAllwaysever.
  *
  * Cara pakai:
- *   node epubcreator.js                    → menu interaktif
- *   node epubcreator.js createdir          → buat struktur direktori
- *   node epubcreator.js createdir comic    → paksa mode comic (LTR)
- *   node epubcreator.js createdir manga    → paksa mode manga (RTL)
- *   node epubcreator.js convertch          → ubah file .md menjadi .xhtml
- *   node epubcreator.js convertch img2xhtml → generate .xhtml dari gambar
- *   node epubcreator.js convertch xhtml2md → ubah file .xhtml menjadi .md
- *   node epubcreator.js convertch docx2md  → ubah file .docx menjadi .md
- *   node epubcreator.js conv ...           → alias untuk convertch
- *   node epubcreator.js split <path>       → pecah file .md berdasarkan ##
- *   node epubcreator.js merge <path>       → gabungkan file .md
- *   node epubcreator.js build              → build EPUB
- *   node epubcreator.js debug              → pantau perubahan, auto build
- *   node epubcreator.js import             → impor file .epub
- *   node epubcreator.js update module      → update node_modules dari repo
- *   node epubcreator.js update config      → update .epubcreator dari repo
- *   node epubcreator.js settings           → ubah pengaturan tool
- *   node epubcreator.js validate           → validasi EPUB dengan epubcheck
- *   node epubcreator.js --version          → tampilkan versi
- *   node epubcreator.js help               → tampilkan bantuan
+ *   node epubcreator.js                    -> menu interaktif
+ *   node epubcreator.js createdir          -> buat struktur direktori
+ *   node epubcreator.js createdir comic    -> paksa mode comic (LTR)
+ *   node epubcreator.js createdir manga    -> paksa mode manga (RTL)
+ *   node epubcreator.js convertch          -> ubah file .md menjadi .xhtml
+ *   node epubcreator.js convertch img2xhtml -> generate .xhtml dari gambar
+ *   node epubcreator.js convertch xhtml2md -> ubah file .xhtml menjadi .md
+ *   node epubcreator.js convertch docx2md  -> ubah file .docx menjadi .md
+ *   node epubcreator.js conv ...           -> alias untuk convertch
+ *   node epubcreator.js split <path>       -> pecah file .md berdasarkan ##
+ *   node epubcreator.js merge <path>       -> gabungkan file .md
+ *   node epubcreator.js build              -> build EPUB
+ *   node epubcreator.js debug              -> pantau perubahan, auto build
+ *   node epubcreator.js import             -> impor file .epub
+ *   node epubcreator.js stats              -> tampilkan statistik buku
+ *   node epubcreator.js preview            -> jalankan server preview lokal
+ *   node epubcreator.js update module      -> update node_modules dari repo
+ *   node epubcreator.js update config      -> update .epubcreator dari repo
+ *   node epubcreator.js settings           -> ubah pengaturan tool
+ *   node epubcreator.js validate           -> validasi EPUB dengan epubcheck
+ *   node epubcreator.js --version          -> tampilkan versi
+ *   node epubcreator.js help               -> tampilkan bantuan
+ *
+ * Global flags (dapat dipakai di mana saja):
+ *   --quiet, -q      hanya tampilkan error
+ *   --verbose        tampilkan detail tambahan
+ *   --json           output JSON ke stdout (mensupresi log non-error)
+ *   --dry-run, -n    tampilkan rencana tanpa menulis file
  */
 
-const VERSION = '4.1.0';
+const VERSION = '4.2.0';
 
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const crypto = require('crypto');
 const https = require('https');
-const { execSync, execFileSync } = require('child_process');
+const http = require('http');
+const { execSync, execFileSync, spawn } = require('child_process');
+
+// ─── Runtime flags ─────────────────────────────────────────────────────
+const OPTS = {
+  quiet: false,
+  verbose: false,
+  json: false,
+  dryRun: false,
+};
+
+const isTermux = !!(
+  (process.env.PREFIX && process.env.PREFIX.includes('com.termux')) ||
+  process.env.TERMUX_VERSION
+);
 
 // ─── Terminal colors (ANSI, ASCII-safe) ────────────────────────────────
 const _useColor = !!(process.stdout.isTTY && !process.env.NO_COLOR);
@@ -59,7 +86,6 @@ const VALID_TYPES = ['textbook', 'comic', 'manga'];
 
 // ─── Pesan (EN) ───────────────────────────────────────────────────────
 const MESSAGES = {
-  // Pesan umum
   missing_dep: 'Module "{mod}" (v{version}) not found. Install with:\n  npm install {mod}@{version}\nor\n  node epubcreator.js update module\n',
   marked_old: '"marked" version is too old. Reinstall with:\n  npm install marked@4.0.0\nor\n  node epubcreator.js update module\n',
   cancelled: 'Cancelled.',
@@ -70,7 +96,6 @@ const MESSAGES = {
   dir_created: 'Directory structure created at {dirs}',
   ready: 'Directory and template files ready.',
 
-  // convertch (MD→XHTML)
   markdowns_not_found: 'Markdowns/ directory not found. Create with "node epubcreator.js createdir"',
   path_not_found: 'Path not found: {path}',
   must_be_md: 'File must have .md extension',
@@ -87,8 +112,9 @@ const MESSAGES = {
   convert_summary: 'Done: {success} out of {total} files converted successfully.',
   invalid_path: 'Path is not a valid file or directory.',
   xhtml_already_exists: '{file} already exists. (Y) Overwrite, (N) Copy to Markdowns, (C) Cancel: ',
+  convert_incremental_skip: 'Skipped (unchanged): {file}',
+  convert_incremental_force_all: 'Overwriting all .xhtml (--all).',
 
-  // convertch xhtml2md
   epub_not_found: 'EPUB/ directory not found.',
   must_be_xhtml: 'File must have .xhtml extension',
   skip_cover: 'Skipping {file} (excluded)',
@@ -98,14 +124,13 @@ const MESSAGES = {
   convertx_fail: 'Failed to convert {file}: {error}',
   convertx_summary: 'Done: {success} out of {total} files converted successfully.',
 
-  // convertch docx2md
   docx_no_files: 'No .docx files found.',
   docx_processing: 'Processing: {file}',
   docx_no_images: 'Image extraction from DOCX not yet supported; images will be ignored.',
   docx_heading_mode_warn: 'Font size based heading mode is used (with configured thresholds).',
   docx_nosplit_mode: 'No-split mode (--nosplit) is active, all content will be merged into one file.',
+  docx_done: 'Done.',
 
-  // convertch img2xhtml (comic/manga)
   img2x_epub_not_found: 'EPUB/ directory not found. Run "createdir comic" or "createdir manga" first.',
   img2x_pages_not_found: 'EPUB/images/pages/ not found. Put page images there first.',
   img2x_no_images: 'No images found in EPUB/images/pages/.',
@@ -122,25 +147,25 @@ const MESSAGES = {
   img2x_ord_regen: 'ord.txt regenerated: {file}',
   img2x_ord_cancelled: 'ord.txt regeneration cancelled.',
   img2x_summary: 'Done: {success} XHTML generated, {skipped} skipped, {total} total.',
+  img2x_alt_missing: 'Missing alt text for {file}. Add " | description" in ord.txt for better accessibility.',
 
-  // split
-  split_usage: 'node epubcreator.js split <path> [--output dir] [--force]',
+  split_usage: 'node epubcreator.js split <path> [--output dir] [--force] [--dry-run]',
   split_processing: 'Processing {file} ...',
   split_no_heading: 'No heading level 2 (##) found in {file}, entire content saved as one file.',
   split_parts: 'Split into {count} parts.',
   split_created: 'File created: {file}',
   split_summary: 'Done: {success} out of {total} files processed successfully.',
   split_output_dir: 'Output directory: {dir}',
+  split_dry: '[dry] Would create {count} file(s) in {dir}',
 
-  // merge
-  merge_usage: 'node epubcreator.js merge <path> [--output file] [--force]',
+  merge_usage: 'node epubcreator.js merge <path> [--output file] [--force] [--dry-run]',
   merge_no_files: 'No .md files found in {path}.',
   merge_processing: 'Merging {count} files ...',
   merge_created: 'Merged file created: {file}',
   merge_summary: '{count} files successfully merged into {output}.',
   merge_output_file: 'Output: {file}',
+  merge_dry: '[dry] Would merge {count} file(s) into {output}',
 
-  // build
   config_not_found: 'config.txt not found! Run: node epubcreator.js createdir',
   epub_dir_not_found: 'EPUB/ directory not found!',
   title_missing: 'config.txt must have "title"',
@@ -153,8 +178,9 @@ const MESSAGES = {
   epub_built: 'EPUB built successfully: {path} ({size} KB)',
   zip_error: 'Failed to create ZIP: {error}',
   warning_ord_not_found: 'Warning: file "{file}" in ord.txt not found in EPUB/',
+  ord_unsafe_path: 'Skipping unsafe path in ord.txt: {file}',
+  build_dry: '[dry] Would build {file}: {chapters} chapter(s), {images} image(s), {audio} audio/video',
 
-  // build comic/manga
   comic_mode: 'Comic mode: {type} ({direction}, spread: {spread})',
   comic_pages_found: 'Found {count} page(s).',
   comic_double_detected: 'Page {page} detected as double-spread (ratio {ratio}).',
@@ -163,7 +189,6 @@ const MESSAGES = {
   comic_syncing: 'Syncing XHTML from images...',
   comic_css_found: 'Custom CSS: {list}',
 
-  // import
   import_no_epub: 'No .epub file found in this directory.',
   import_select: 'Select EPUB file to import:',
   import_select_prompt: 'Enter number (1-{count}): ',
@@ -178,8 +203,8 @@ const MESSAGES = {
   import_comic_detected: 'Detected fixed-layout ({type}, {direction})',
   import_comic_pages: 'Extracted {count} page(s) to EPUB/images/pages/',
   import_ord_written: 'ord.txt written with {count} entries.',
+  import_unsafe_path: 'Unsafe path in EPUB, skipping: {path}',
 
-  // update module / config
   node_modules_missing: 'node_modules not found.',
   download_confirm: 'Download pre-built dependencies from repository? (y/n) ',
   extract_no_assets: 'Folder node_modules not found in archive.',
@@ -192,34 +217,32 @@ const MESSAGES = {
   update_confirm: 'This will replace your existing node_modules folder. Continue? (y/n) ',
   update_force: 'Overwriting node_modules (--force).',
 
-  // update subcommand helpers
   update_usage: 'Usage: node epubcreator.js update <module|config> [--force]',
   update_unknown_sub: 'Unknown update target: {sub}',
 
-  // validate
   validate_no_epub: 'No .epub file found in builds/',
   validate_start: 'Validating {file} ...',
   validate_ok: 'Validation passed for {file}',
   validate_fail: 'Validation failed:\n{output}',
+  validate_epubcheck_missing: 'epubcheck not found.\n  Termux: pkg install openjdk-17\n  Then: node epubcreator.js update config (downloads epubcheck.jar)\n  Or install manually: https://github.com/w3c/epubcheck/releases',
+  validate_java_missing: 'epubcheck found but Java is missing.\n  Termux: pkg install openjdk-17\n  Others: install Java 8+ from java.com',
 
-  // debug
   debug_usage: 'node epubcreator.js debug  -> Watch changes, auto convertch + build',
   debug_start: 'Watching Markdowns/ for changes... Press q to stop, Ctrl+C to exit.',
   debug_start_comic: 'Watching EPUB/images/pages/ for changes... Press q to stop, Ctrl+C to exit.',
   debug_change: 'Changes detected, rebuilding...',
   debug_error: 'Error during rebuild: {error}',
   debug_watch_fallback: 'Warning: recursive watch not supported, watching root directory only (subdirectory changes may not trigger).',
+  debug_termux_warning: 'Termux: recursive file watching is not supported on Android. Subdirectory changes may not trigger rebuild.',
   debug_watching_again: 'Watching again...',
   debug_stopped: 'Debug stopped.',
 
-  // settings command
   settings_title: '=== .epubcreator/settings.txt ===',
   settings_prompt: 'Press Enter to keep current value, or type new value. Type "save" to save, "cancel" to abort.',
   settings_saved: 'Settings saved to {file}.',
   settings_cancelled: 'Settings cancelled.',
   settings_invalid_value: 'Invalid value. Keeping previous.',
 
-  // updateconfig
   updateconfig_confirm: 'This will replace your existing .epubcreator folder. Continue? (y/n) ',
   updateconfig_force: 'Overwriting .epubcreator (--force).',
   updateconfig_fetching: 'Downloading configuration bundle from config branch...',
@@ -228,7 +251,6 @@ const MESSAGES = {
   updateconfig_no_assets: 'Folder .epubcreator not found in archive.',
   updateconfig_failed: 'Failed to update config: {error}',
 
-  // createdir
   createdir_update_config: 'Updating .epubcreator from config branch...',
   createdir_skip_update: 'Skipping .epubcreator update.',
   createdir_type_prompt: 'Type (textbook/comic/manga) [{default}]: ',
@@ -240,113 +262,38 @@ const MESSAGES = {
   createdir_pages_hint: 'Place comic pages at EPUB/images/pages/',
   createdir_styles_hint: '(Optional) Place custom CSS at EPUB/styles/',
 
-  // command unknown
   unknown_command: 'Unknown command: {cmd}',
   maybe_you_mean: 'Maybe you mean: {suggestion}',
-  usage_hint: 'Use: createdir | convertch | conv | split | merge | build | debug | import | update | settings | validate | --version',
+  usage_hint: 'Use: createdir | convertch | conv | split | merge | build | debug | import | stats | preview | update | settings | validate | --version',
 
-  // Help
-  help_title: 'epubcreator — CLI for compiling directory to EPUB  (v{version})',
-  help_commands: `
-Usage:
-  node epubcreator.js [command] [subcommand] [options]
+  // stats
+  stats_no_config: 'config.txt not found. Run: node epubcreator.js createdir',
+  stats_title: 'Statistics: {dir}',
+  stats_type: '  Type        : {type}',
+  stats_direction: '  Direction   : {direction}',
+  stats_chapters: '  Chapters    : {count}',
+  stats_pages: '  Pages       : {count}',
+  stats_words: '  Words       : {count} ({readtime})',
+  stats_images: '  Images      : {count} ({size})',
+  stats_audio: '  Audio/Video : {count} ({size})',
+  stats_last_build: '  Last build  : {file} ({size}, {date})',
+  stats_no_build: '  Last build  : (none)',
 
-  (no args)
-    Open interactive menu.
+  // preview
+  preview_start: 'Preview server: http://{host}:{port}/',
+  preview_no_epub: 'No .epub file found. Run "node epubcreator.js build" first.',
+  preview_no_epubjs: 'epub.min.js not found. Run "node epubcreator.js update config" or install via "npm install epubjs".',
+  preview_watching: 'Watching for changes (--watch active). Press Ctrl+C to stop.',
+  preview_rebuilt: 'Rebuilt. Browser will reload.',
+  preview_reload: 'Reload signal sent.',
+  preview_stopped: 'Preview stopped.',
+  preview_port_in_use: 'Port {port} in use. Try --port <number>.',
+  preview_open_hint: 'Open in browser: http://{host}:{port}/',
+  preview_termux_open: 'Opening browser via termux-open-url...',
+  preview_build_needed: 'Building EPUB before serving...',
 
-  createdir [textbook|comic|manga]
-    Create directory structure. Interactive prompt when type is omitted.
-    textbook     Default, reflowable book
-    comic        LTR fixed-layout comic
-    manga        RTL fixed-layout manga
-
-  convertch [subcommand] [path] [options]
-  conv         Alias for convertch.
-    md2xhtml     (default)   Convert .md to .xhtml, reads Markdowns/
-    xhtml2md                 Convert .xhtml to .md
-    docx2md                  Convert .docx to .md, split by heading ##
-    img2xhtml                Generate .xhtml from images, comic/manga mode
-
-    Options for convertch / xhtml2md / docx2md:
-      --force, -f            Overwrite existing files
-      --output <path>        (docx2md, split, merge only) Output path
-
-    Options for img2xhtml:
-      --force, -f            Regenerate all XHTML
-      --regen-ord            Regenerate ord.txt (asks confirmation)
-      --fit=<mode>           contain | cover | width | height | none
-
-  split <path> [--output dir] [--force]
-    Split .md file by heading ##.
-
-  merge <path> [--output file] [--force]
-    Merge .md files into one (reverse of split).
-
-  build
-    Build EPUB from current directory.
-
-  debug
-    Watch changes, auto convert and build.
-
-  import [--force] [--output dir]
-    Import .epub file from current directory.
-
-  update <module|config> [--force]
-    module                   Download/update node_modules from repository
-    config                   Download/update .epubcreator from config branch
-
-  settings
-    Interactive tool settings.
-
-  validate
-    Validate latest EPUB in builds/ with epubcheck.
-
-  help, --help
-    Show this help.
-
-  --version, -v
-    Show version.`,
-  help_structure: `
-Directory structure (textbook):
-  ./
-  |-- config.txt          <- book metadata (required), type: textbook
-  |-- ord.txt             <- chapter order list (optional)
-  |-- Docs/               <- source .docx files (for docx2md)
-  |-- Markdowns/          <- source .md files (for convertch)
-  |-- EPUB/
-  |   |-- images/
-  |   |   |-- cover.png   <- REQUIRED
-  |   |-- audiovideo/     <- optional
-  |   |-- bab1.xhtml      <- chapters (any name, in EPUB/ root)
-  |-- builds/
-      |-- [folder-name].epub
-
-Directory structure (comic/manga):
-  ./
-  |-- config.txt          <- type: comic | manga, reading_direction: ltr | rtl
-  |-- ord.txt             <- optional: ordered list with * / ! / | alt
-  |-- EPUB/
-  |   |-- images/
-  |   |   |-- cover.jpg   <- REQUIRED
-  |   |   |-- pages/
-  |   |       |-- ch1/    <- optional chapter grouping
-  |   |       |   |-- 0001.jpg
-  |   |       |   |-- 0002.jpg
-  |   |       |-- ch2/
-  |   |           |-- 0001.jpg
-  |   |-- xhtmls/         <- auto-generated by "convertch img2xhtml"
-  |   |-- styles/         <- optional custom CSS
-  |   |-- about.xhtml     <- back-matter (reflowable) optional
-  |   |-- audiovideo/     <- optional
-  |-- builds/
-      |-- [folder-name].epub`,
-  help_deps: `
-Note: make sure main dependencies are installed:
-  npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4
-For DOCX feature:  npm install mammoth@1.6.0 (optional)
-For import feature: npm install adm-zip@0.5.10 xml2js@0.5.0 (optional)
-For validation: install epubcheck (https://github.com/w3c/epubcheck)
-  Or run "node epubcreator.js update module" to download automatically.`,
+  // sanitize
+  sanitize_missing: 'sanitize-html not installed; using minimal fallback. Install with: npm install sanitize-html',
 };
 
 // ─── Variabel global ──────────────────────────────────────────────────
@@ -360,7 +307,7 @@ function stripEmojiPrefix(str) {
   return String(str).replace(EMOJI_PREFIX_RE, '');
 }
 
-// ─── Fungsi untuk memuat settings ─────────────────────────────────────
+// ─── Settings ─────────────────────────────────────────────────────────
 function loadSettings() {
   const settingsPath = path.join(process.cwd(), SETTINGS_FILE);
   const defaults = {
@@ -386,14 +333,12 @@ function loadSettings() {
     if (idx === -1) continue;
     const key = trimmed.slice(0, idx).trim();
     const value = trimmed.slice(idx + 1).trim();
-    if (key && value) {
-      settings[key] = value;
-    }
+    if (key && value) settings[key] = value;
   }
   return settings;
 }
 
-// ─── Fungsi terjemahan / substitusi string ────────────────────────────
+// ─── Message substitution ─────────────────────────────────────────────
 function t(key, params = {}) {
   let str = MESSAGES[key] || key;
   str = stripEmojiPrefix(str);
@@ -403,7 +348,7 @@ function t(key, params = {}) {
   return str;
 }
 
-// ─── Log styles (ANSI + ASCII prefix) ─────────────────────────────────
+// ─── Logging ──────────────────────────────────────────────────────────
 const LOG_STYLES = {
   info:    { tag: '[i] ', color: c.cyan },
   success: { tag: '[OK]', color: c.green },
@@ -411,9 +356,14 @@ const LOG_STYLES = {
   error:   { tag: '[!!]', color: c.red },
 };
 
+let _logCapture = null;
+
 function log(msg, type = 'info') {
   const s = LOG_STYLES[type] || LOG_STYLES.info;
   const cleanMsg = stripEmojiPrefix(String(msg));
+  if (_logCapture) _logCapture.push({ type, msg: cleanMsg });
+  if (OPTS.quiet && type !== 'error') return;
+  if (OPTS.json && type !== 'error') return;
   console.log(`${s.color}${s.tag}${c.reset} ${cleanMsg}`);
 }
 
@@ -421,7 +371,12 @@ function logI18n(key, params = {}, type = 'info') {
   log(t(key, params), type);
 }
 
-// ─── Suggest command (for unknown-command hint) ───────────────────────
+function emitJson(data) {
+  if (!OPTS.json) return;
+  console.log(JSON.stringify(data));
+}
+
+// ─── Suggest command ──────────────────────────────────────────────────
 const COMMAND_SUGGESTIONS = {
   'updatemodule': 'update module',
   'updateconfig': 'update config',
@@ -429,7 +384,7 @@ const COMMAND_SUGGESTIONS = {
 const KNOWN_COMMANDS = [
   'createdir', 'convertch', 'conv', 'split', 'merge',
   'build', 'debug', 'import', 'update', 'settings',
-  'validate', 'help',
+  'validate', 'stats', 'preview', 'help',
 ];
 
 function levenshtein(a, b) {
@@ -455,8 +410,7 @@ function levenshtein(a, b) {
 function suggestCommand(cmd) {
   const lower = String(cmd || '').toLowerCase();
   if (COMMAND_SUGGESTIONS[lower]) return COMMAND_SUGGESTIONS[lower];
-  let best = null;
-  let bestDist = Infinity;
+  let best = null, bestDist = Infinity;
   for (const cc of KNOWN_COMMANDS) {
     const d = levenshtein(lower, cc);
     if (d < bestDist) { bestDist = d; best = cc; }
@@ -466,7 +420,7 @@ function suggestCommand(cmd) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  TUI  (full-screen interactive menu, alternate-screen buffer)
+//  TUI
 // ═══════════════════════════════════════════════════════════════════════
 
 const _origConsoleLog = console.log.bind(console);
@@ -476,7 +430,6 @@ function stripAnsi(s) {
   return String(s).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
 }
 
-// Menu structure — rendered in 3 columns per section.
 const MENU_DEF = [
   {
     section: 'CREATE',
@@ -503,6 +456,8 @@ const MENU_DEF = [
       { key: 'b', label: 'Build EPUB' },
       { key: 'd', label: 'Debug' },
       { key: 'v', label: 'Validate' },
+      { key: 'p', label: 'Preview' },
+      { key: 't', label: 'Stats' },
       { key: 'i', label: 'Import' },
       { key: 's', label: 'Settings' },
       { key: 'u', label: 'Update...' },
@@ -533,6 +488,8 @@ const TUI = {
     if (!process.stdout.isTTY) return false;
     if (!process.stdin.isTTY) return false;
     if (process.env.NO_TUI) return false;
+    if (OPTS.json) return false;
+    if (OPTS.quiet) return false;
     if ((process.stdout.columns || 80) < 60) return false;
     if ((process.stdout.rows || 24) < 20) return false;
     return true;
@@ -556,26 +513,20 @@ const TUI = {
   enter() {
     if (!this.canUse()) return false;
     this.active = true;
-
     try { rl.close(); } catch (_) {}
-
     process.stdout.write('\x1b[?1049h');
     process.stdout.write('\x1b[?25l');
     process.stdout.write('\x1b[H\x1b[2J');
-
     try { process.stdin.setRawMode(true); } catch (_) {}
     process.stdin.resume();
-
     this._dataHandler = (chunk) => this.handleInput(chunk);
     process.stdin.on('data', this._dataHandler);
-
     this._resizeHandler = () => {
       this.cols = process.stdout.columns || 80;
       this.rows = process.stdout.rows || 24;
       this.render();
     };
     process.stdout.on('resize', this._resizeHandler);
-
     this.render();
     return true;
   },
@@ -583,7 +534,6 @@ const TUI = {
   exit() {
     if (!this.active) return;
     this.active = false;
-
     if (this._dataHandler) {
       process.stdin.removeListener('data', this._dataHandler);
       this._dataHandler = null;
@@ -592,22 +542,18 @@ const TUI = {
       process.stdout.removeListener('resize', this._resizeHandler);
       this._resizeHandler = null;
     }
-
     try { process.stdin.setRawMode(false); } catch (_) {}
     process.stdout.write('\x1b[?25h');
     process.stdout.write('\x1b[?1049l');
-
     if (this.onExit) this.onExit();
   },
 
   suspend() {
     if (!this.active || this.suspended) return;
     this.suspended = true;
-
     try { process.stdin.setRawMode(false); } catch (_) {}
     process.stdout.write('\x1b[?25h');
     process.stdout.write('\x1b[?1049l');
-
     try { rl.close(); } catch (_) {}
     rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   },
@@ -615,9 +561,7 @@ const TUI = {
   resume() {
     if (!this.active || !this.suspended) return;
     this.suspended = false;
-
     try { rl.close(); } catch (_) {}
-
     process.stdout.write('\x1b[?1049h');
     process.stdout.write('\x1b[?25l');
     process.stdout.write('\x1b[H\x1b[2J');
@@ -628,29 +572,23 @@ const TUI = {
   pushLog(text) {
     const lines = String(text).split('\n');
     for (const line of lines) this.logs.push(line);
-    if (this.logs.length > this.maxLogs) {
-      this.logs = this.logs.slice(-this.maxLogs);
-    }
+    if (this.logs.length > this.maxLogs) this.logs = this.logs.slice(-this.maxLogs);
     if (!this.suspended) this.render();
   },
 
   render() {
     if (!this.active || this.suspended) return;
-
     const menuLines = this.buildMenuLines();
     const menuHeight = menuLines.length;
     const logHeight = Math.max(1, this.rows - menuHeight - 1);
     const visibleLogs = this.getVisibleLogs(logHeight);
-
     let out = '\x1b[H';
-
     for (let i = 0; i < logHeight; i++) {
       out += this.padLine(visibleLogs[i] || '', this.cols) + '\x1b[K\n';
     }
     for (let i = 0; i < menuLines.length; i++) {
       out += this.padLine(menuLines[i], this.cols) + '\x1b[K\n';
     }
-
     if (this.promptState) {
       out += '\x1b[?25h';
       out += this.promptState.prompt + this.promptState.buffer;
@@ -659,7 +597,6 @@ const TUI = {
       out += '\x1b[?25l';
       out += this.padLine(this.buildHelpLine(), this.cols) + '\x1b[K\x1b[J';
     }
-
     process.stdout.write(out);
   },
 
@@ -685,12 +622,10 @@ const TUI = {
     const gap = 4;
     const colWidth = Math.floor((cols - 2 * gap) / 3);
     let flatIdx = 0;
-
     for (const section of MENU_DEF) {
       const headerText = ` ${section.section} `;
       const padLeft = Math.max(0, Math.floor((cols - headerText.length) / 2));
       lines.push(' '.repeat(padLeft) + '\x1b[7m' + headerText + '\x1b[0m');
-
       for (let i = 0; i < section.items.length; i += 3) {
         const cells = [];
         for (let j = 0; j < 3; j++) {
@@ -704,18 +639,15 @@ const TUI = {
       }
       lines.push('');
     }
-
     while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
     return lines;
   },
 
   renderItemCell(item, idx, align, width) {
     if (!item) return ' '.repeat(width);
-
     const selected = (idx === this.selected);
     const prefix = selected ? '> ' : '  ';
     const plain = `${prefix}[${item.key}] ${item.label}`;
-
     let padded;
     if (align === 'left') {
       padded = plain.padEnd(width, ' ').slice(0, width);
@@ -730,7 +662,6 @@ const TUI = {
         padded = ' '.repeat(leftPad) + plain + ' '.repeat(totalPad - leftPad);
       }
     }
-
     if (selected) return c.bold + c.cyan + padded + c.reset;
     return padded;
   },
@@ -740,40 +671,24 @@ const TUI = {
       return ` ${c.yellow}Update: [m]odule / [c]onfig / Esc cancel${c.reset}`;
     }
     if (this.debugActive) {
-      return ` ${c.yellow}Debug active — q stop   PgUp/PgDn scroll   Ctrl+C exit${c.reset}`;
+      return ` ${c.yellow}Debug active - q stop   PgUp/PgDn scroll   Ctrl+C exit${c.reset}`;
     }
     return ` ${c.gray}Up/Down navigate   Enter select   PgUp/PgDn scroll   h help   q quit   (${this.selected + 1}/${this.menu.length})${c.reset}`;
   },
 
   handleInput(chunk) {
     if (this.suspended) return;
-
     const str = chunk.toString('utf8');
-
-    if (this.promptState) {
-      this.handlePromptInput(str);
-      return;
-    }
-
-    if (this.updateSubmenu) {
-      this.handleUpdateSubmenuInput(str);
-      return;
-    }
-
-    if (this.debugActive) {
-      this.handleDebugInput(str);
-      return;
-    }
-
+    if (this.promptState) { this.handlePromptInput(str); return; }
+    if (this.updateSubmenu) { this.handleUpdateSubmenuInput(str); return; }
+    if (this.debugActive) { this.handleDebugInput(str); return; }
     if (this.executing) {
       if (str.includes('\x03')) this.exit();
       return;
     }
-
     let i = 0;
     while (i < str.length) {
       const ch = str[i];
-
       if (ch === '\x1b') {
         if (str[i + 1] === '[') {
           const code = str[i + 2];
@@ -789,18 +704,14 @@ const TUI = {
         i += 1;
         continue;
       }
-
       if (ch === '\r' || ch === '\n') { this.runSelected(); return; }
       if (ch === '\x03' || ch === '\x04') { this.exit(); return; }
-
       const lower = ch.toLowerCase();
-
       if (lower === 'q') { this.exit(); return; }
       if (lower === 'h') {
-        this.pushLog(`${c.cyan}Help:${c.reset} use Up/Down + Enter, or press shortcut keys directly (1-9, b, d, v, i, s, u). q quits. PgUp/PgDn scrolls log.`);
+        this.pushLog(`${c.cyan}Help:${c.reset} use Up/Down + Enter, or press shortcut keys directly (1-9, b, d, v, p, t, i, s, u). q quits. PgUp/PgDn scrolls log.`);
         return;
       }
-
       const idx = this.menu.findIndex(it => it.key === lower);
       if (idx >= 0) {
         this.selected = idx;
@@ -808,7 +719,6 @@ const TUI = {
         this.runSelected();
         return;
       }
-
       i += 1;
     }
   },
@@ -816,12 +726,7 @@ const TUI = {
   handleUpdateSubmenuInput(str) {
     for (let i = 0; i < str.length; i++) {
       const ch = str[i];
-
-      if (ch === '\x03') {
-        this.updateSubmenu = false;
-        this.exit();
-        return;
-      }
+      if (ch === '\x03') { this.updateSubmenu = false; this.exit(); return; }
       if (ch === '\x1b') {
         if (str[i + 1] === '[') { i += 2; continue; }
         this.updateSubmenu = false;
@@ -829,21 +734,9 @@ const TUI = {
         return;
       }
       const lower = ch.toLowerCase();
-      if (lower === 'm') {
-        this.updateSubmenu = false;
-        this.runUpdateAction('module');
-        return;
-      }
-      if (lower === 'c') {
-        this.updateSubmenu = false;
-        this.runUpdateAction('config');
-        return;
-      }
-      if (lower === 'q') {
-        this.updateSubmenu = false;
-        this.render();
-        return;
-      }
+      if (lower === 'm') { this.updateSubmenu = false; this.runUpdateAction('module'); return; }
+      if (lower === 'c') { this.updateSubmenu = false; this.runUpdateAction('config'); return; }
+      if (lower === 'q') { this.updateSubmenu = false; this.render(); return; }
     }
   },
 
@@ -853,11 +746,8 @@ const TUI = {
     this.pushLog(`${c.cyan}> Update ${which}${c.reset}`);
     this.suspend();
     try {
-      if (which === 'module') {
-        await doUpdateModule(false);
-      } else {
-        await doUpdateConfig(false);
-      }
+      if (which === 'module') await doUpdateModule(false);
+      else await doUpdateConfig(false);
     } catch (err) {
       this.pushLog(`${c.red}Error: ${err.message}${c.reset}`);
     } finally {
@@ -870,7 +760,6 @@ const TUI = {
     let i = 0;
     while (i < str.length) {
       const ch = str[i];
-
       if (ch === '\x03') {
         if (_activeDebugStop) _activeDebugStop();
         this.exit();
@@ -896,7 +785,6 @@ const TUI = {
     let changed = false;
     for (let i = 0; i < str.length; i++) {
       const ch = str[i];
-
       if (ch === '\r' || ch === '\n') {
         const answer = p.buffer;
         this.promptState = null;
@@ -949,10 +837,8 @@ const TUI = {
     if (this.executing) return;
     const item = this.menu[this.selected];
     if (!item) return;
-
     this.executing = true;
     this.pushLog(`${c.cyan}> ${item.label}${c.reset}`);
-
     try {
       await this.executeAction(item);
     } catch (err) {
@@ -965,18 +851,19 @@ const TUI = {
 
   async executeAction(item) {
     const key = item.key;
-
-    if (key === 'd') {
-      await this.runDebugInTui();
+    if (key === 'd') { await this.runDebugInTui(); return; }
+    if (key === 'u') { this.updateSubmenu = true; this.render(); return; }
+    if (key === 'p') {
+      this.suspend();
+      try {
+        await cmdPreview([]);
+      } catch (err) {
+        this.pushLog(`${c.red}Error: ${err.message}${c.reset}`);
+      } finally {
+        this.resume();
+      }
       return;
     }
-
-    if (key === 'u') {
-      this.updateSubmenu = true;
-      this.render();
-      return;
-    }
-
     const needsSuspend = ['1', '2', '3'];
     if (needsSuspend.includes(key)) {
       this.suspend();
@@ -987,7 +874,6 @@ const TUI = {
       }
       return;
     }
-
     await handleMenuChoice(key, this.deps);
   },
 
@@ -995,7 +881,6 @@ const TUI = {
     this.debugActive = true;
     this.pushLog(`${c.yellow}Debug mode active. Press q to stop, Ctrl+C to exit.${c.reset}`);
     this.render();
-
     try {
       await cmdDebug(this.deps.archiver, this.deps.marked);
     } catch (err) {
@@ -1003,13 +888,11 @@ const TUI = {
     } finally {
       this.debugActive = false;
     }
-
     this.pushLog(`${c.green}Debug stopped. Returned to menu.${c.reset}`);
     this.render();
   },
 };
 
-// ─── Redirect console.log / console.error when TUI is active ─────────
 console.log = function (...args) {
   if (TUI.active && !TUI.suspended) {
     TUI.pushLog(args.map(a => typeof a === 'string' ? a : String(a)).join(' '));
@@ -1029,28 +912,19 @@ console.error = function (...args) {
 //  End of TUI
 // ═══════════════════════════════════════════════════════════════════════
 
-// ─── Cek dependensi (non-fatal) ──────────────────────────────────────
-// Hasil: { ok: true, deps } | { ok: false, missing: [{ mod, version, old? }] }
 function tryCheckDependencies() {
   const missing = [];
-
   try { require.resolve('archiver'); }
   catch (_) { missing.push({ mod: 'archiver', version: '5.3.0' }); }
-
   try {
     const m = require('marked');
-    if (typeof m.parse !== 'function') {
-      missing.push({ mod: 'marked', version: '4.0.0', old: true });
-    }
+    if (typeof m.parse !== 'function') missing.push({ mod: 'marked', version: '4.0.0', old: true });
   } catch (_) {
     missing.push({ mod: 'marked', version: '4.0.0' });
   }
-
   try { require.resolve('turndown'); }
   catch (_) { missing.push({ mod: 'turndown', version: '7.2.4' }); }
-
   if (missing.length > 0) return { ok: false, missing };
-
   return {
     ok: true,
     deps: {
@@ -1087,9 +961,7 @@ function closeRL() {
 }
 
 function question(prompt) {
-  if (TUI.active && !TUI.suspended) {
-    return TUI.askUser(prompt);
-  }
+  if (TUI.active && !TUI.suspended) return TUI.askUser(prompt);
   return new Promise((resolve) => rl.question(prompt, resolve));
 }
 
@@ -1118,13 +990,13 @@ function extractTitleFromMd(content) {
   return null;
 }
 
-// ─── Sleep & pause helper ──────────────────────────────────────────────
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 async function pauseBeforeMenu(seconds = 3) {
   if (TUI.active) return;
+  if (OPTS.quiet || OPTS.json) return;
   if (!process.stdout.isTTY) {
     await sleep(seconds * 1000);
     return;
@@ -1137,15 +1009,28 @@ async function pauseBeforeMenu(seconds = 3) {
   process.stdout.write(`\r${' '.repeat(50)}\r`);
 }
 
-// ─── Generic walkers ───────────────────────────────────────────────────
-function walkMdFiles(dir) {
+// ─── Symlink-safe walkers ──────────────────────────────────────────────
+function walkMdFiles(dir, seen = new Set()) {
   let results = [];
-  const list = fs.readdirSync(dir);
+  let real;
+  try { real = fs.realpathSync(dir); } catch (_) { return results; }
+  if (seen.has(real)) return results;
+  seen.add(real);
+  let list;
+  try { list = fs.readdirSync(dir); } catch (_) { return results; }
   for (const item of list) {
     const fullPath = path.join(dir, item);
-    const stat = fs.statSync(fullPath);
+    let stat;
+    try { stat = fs.lstatSync(fullPath); } catch (_) { continue; }
+    if (stat.isSymbolicLink()) {
+      let targetStat;
+      try { targetStat = fs.statSync(fullPath); } catch (_) { continue; }
+      if (targetStat.isDirectory()) results = results.concat(walkMdFiles(fullPath, seen));
+      else if (targetStat.isFile() && fullPath.toLowerCase().endsWith('.md')) results.push(fullPath);
+      continue;
+    }
     if (stat.isDirectory()) {
-      results = results.concat(walkMdFiles(fullPath));
+      results = results.concat(walkMdFiles(fullPath, seen));
     } else if (stat.isFile() && fullPath.toLowerCase().endsWith('.md')) {
       results.push(fullPath);
     }
@@ -1153,34 +1038,62 @@ function walkMdFiles(dir) {
   return results;
 }
 
-function walkXhtmlFiles(dir) {
+function walkXhtmlFiles(dir, seen = new Set()) {
   const exclude = ['cover.xhtml', 'toc.xhtml', 'nav.xhtml'];
   let results = [];
-  const list = fs.readdirSync(dir);
+  let real;
+  try { real = fs.realpathSync(dir); } catch (_) { return results; }
+  if (seen.has(real)) return results;
+  seen.add(real);
+  let list;
+  try { list = fs.readdirSync(dir); } catch (_) { return results; }
   for (const item of list) {
     const fullPath = path.join(dir, item);
-    const stat = fs.statSync(fullPath);
+    let stat;
+    try { stat = fs.lstatSync(fullPath); } catch (_) { continue; }
+    if (stat.isSymbolicLink()) {
+      let targetStat;
+      try { targetStat = fs.statSync(fullPath); } catch (_) { continue; }
+      if (targetStat.isDirectory()) results = results.concat(walkXhtmlFiles(fullPath, seen));
+      else if (targetStat.isFile() && fullPath.toLowerCase().endsWith('.xhtml')) {
+        const base = path.basename(fullPath).toLowerCase();
+        if (!exclude.includes(base)) results.push(fullPath);
+      }
+      continue;
+    }
     if (stat.isDirectory()) {
-      results = results.concat(walkXhtmlFiles(fullPath));
+      results = results.concat(walkXhtmlFiles(fullPath, seen));
     } else if (stat.isFile() && fullPath.toLowerCase().endsWith('.xhtml')) {
       const base = path.basename(fullPath).toLowerCase();
-      if (!exclude.includes(base)) {
-        results.push(fullPath);
-      }
+      if (!exclude.includes(base)) results.push(fullPath);
     }
   }
   return results;
 }
 
-function walkFilesRecursive(dir, filterFn) {
+function walkFilesRecursive(dir, filterFn, seen = new Set()) {
   const results = [];
   if (!fs.existsSync(dir)) return results;
-  const items = fs.readdirSync(dir, { withFileTypes: true });
+  let real;
+  try { real = fs.realpathSync(dir); } catch (_) { return results; }
+  if (seen.has(real)) return results;
+  seen.add(real);
+  let items;
+  try { items = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return results; }
   for (const item of items) {
     const fullPath = path.join(dir, item.name);
-    if (item.isDirectory()) {
-      results.push(...walkFilesRecursive(fullPath, filterFn));
-    } else if (item.isFile() && filterFn(fullPath)) {
+    let isDir = item.isDirectory();
+    let isFile = item.isFile();
+    if (item.isSymbolicLink()) {
+      try {
+        const st = fs.statSync(fullPath);
+        isDir = st.isDirectory();
+        isFile = st.isFile();
+      } catch (_) { continue; }
+    }
+    if (isDir) {
+      results.push(...walkFilesRecursive(fullPath, filterFn, seen));
+    } else if (isFile && filterFn(fullPath)) {
       results.push(fullPath);
     }
   }
@@ -1199,7 +1112,7 @@ function naturalSort(arr) {
   return arr.slice().sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }));
 }
 
-// ─── Image size detector (no external deps) ────────────────────────────
+// ─── Image size detector ───────────────────────────────────────────────
 function getImageSize(filePath) {
   try {
     const buf = fs.readFileSync(filePath);
@@ -1214,17 +1127,10 @@ function getImageSize(filePath) {
       while (i < buf.length - 8) {
         if (buf[i] !== 0xFF) { i++; continue; }
         const marker = buf[i + 1];
-        if (marker >= 0xC0 && marker <= 0xCF &&
-            marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {
-          return {
-            height: buf.readUInt16BE(i + 5),
-            width:  buf.readUInt16BE(i + 7),
-          };
+        if (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {
+          return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
         }
-        if (marker === 0xD8 || marker === 0xD9 || (marker >= 0xD0 && marker <= 0xD7)) {
-          i += 2;
-          continue;
-        }
+        if (marker === 0xD8 || marker === 0xD9 || (marker >= 0xD0 && marker <= 0xD7)) { i += 2; continue; }
         if (i + 4 > buf.length) break;
         const len = buf.readUInt16BE(i + 2);
         if (len < 2) break;
@@ -1234,19 +1140,12 @@ function getImageSize(filePath) {
     if (buf.slice(0, 4).toString() === 'RIFF' && buf.slice(8, 12).toString() === 'WEBP') {
       const chunk = buf.slice(12, 16).toString();
       if (chunk === 'VP8 ') {
-        const w = buf.readUInt16LE(26) & 0x3FFF;
-        const h = buf.readUInt16LE(28) & 0x3FFF;
-        return { width: w, height: h };
+        return { width: buf.readUInt16LE(26) & 0x3FFF, height: buf.readUInt16LE(28) & 0x3FFF };
       } else if (chunk === 'VP8L') {
         const b = buf.readUInt32LE(21);
-        return {
-          width:  (b & 0x3FFF) + 1,
-          height: ((b >> 14) & 0x3FFF) + 1,
-        };
+        return { width: (b & 0x3FFF) + 1, height: ((b >> 14) & 0x3FFF) + 1 };
       } else if (chunk === 'VP8X') {
-        const w = (buf.readUIntLE(24, 3)) + 1;
-        const h = (buf.readUIntLE(27, 3)) + 1;
-        return { width: w, height: h };
+        return { width: buf.readUIntLE(24, 3) + 1, height: buf.readUIntLE(27, 3) + 1 };
       }
     }
   } catch (_) { /* ignore */ }
@@ -1266,7 +1165,7 @@ function getSvgSize(filePath) {
   return null;
 }
 
-// ─── Comic/manga helpers ───────────────────────────────────────────────
+// ─── Comic helpers ─────────────────────────────────────────────────────
 function isComicType(type) {
   return type === 'comic' || type === 'manga';
 }
@@ -1296,7 +1195,6 @@ function readChapterTitleOverride(folderPath) {
   return null;
 }
 
-// ─── EPUB-internal path helpers ────────────────────────────────────────
 function epubPathToPosix(p) {
   return String(p).split(path.sep).join('/');
 }
@@ -1304,6 +1202,53 @@ function epubPathToPosix(p) {
 function epubRelative(fromEpubFile, toEpubFile) {
   const fromDir = path.posix.dirname(epubPathToPosix(fromEpubFile));
   return path.posix.relative(fromDir, epubPathToPosix(toEpubFile));
+}
+
+// ─── Path safety ──────────────────────────────────────────────────────
+function isSafeRelative(p) {
+  if (!p || typeof p !== 'string') return false;
+  if (p.includes('\0')) return false;
+  const normalized = path.posix.normalize(p.replace(/\\/g, '/'));
+  if (normalized.startsWith('..')) return false;
+  if (path.posix.isAbsolute(normalized)) return false;
+  if (/^[a-zA-Z]:/.test(normalized)) return false;
+  return true;
+}
+
+// ─── Sanitizer ────────────────────────────────────────────────────────
+let _sanitizeWarned = false;
+function sanitizeHtmlContent(html) {
+  let sanitizeHtml;
+  try { sanitizeHtml = require('sanitize-html'); }
+  catch (_) {
+    if (!_sanitizeWarned) {
+      logI18n('sanitize_missing', {}, 'warn');
+      _sanitizeWarned = true;
+    }
+    return String(html)
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+      .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '')
+      .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+      .replace(/javascript:/gi, '');
+  }
+  return sanitizeHtml(html, {
+    allowedTags: sanitizeHtml.defaults.allowedTags.concat([
+      'img', 'svg', 'g', 'path', 'circle', 'rect', 'line', 'polyline',
+      'polygon', 'text', 'defs', 'use', 'linearGradient', 'radialGradient',
+      'stop', 'figure', 'figcaption', 'mark', 'ruby', 'rt', 'rp',
+    ]),
+    allowedAttributes: {
+      '*': ['id', 'class', 'style', 'title', 'lang', 'dir', 'epub:type', 'role'],
+      'img': ['src', 'alt', 'title', 'width', 'height'],
+      'a': ['href', 'title', 'rel', 'id'],
+      'svg': ['xmlns', 'viewBox', 'width', 'height', 'preserveAspectRatio'],
+      'image': ['xlink:href', 'href', 'width', 'height'],
+      'use': ['xlink:href', 'href'],
+    },
+    allowedSchemes: ['http', 'https', 'mailto', 'data', 'tel', 'urn', 'file'],
+    allowedSchemesByTag: { img: ['data', 'http', 'https', 'file'] },
+    allowProtocolRelative: false,
+  });
 }
 
 // ─── CSS helpers ───────────────────────────────────────────────────────
@@ -1348,13 +1293,11 @@ function parseOrdFile(ordPath, comicMode = false) {
   for (let line of content.split('\n')) {
     line = line.trim();
     if (!line || line.startsWith('#')) continue;
-
     let spread = null;
     if (comicMode) {
       if (line.startsWith('*')) { spread = 'center'; line = line.slice(1).trim(); }
       else if (line.startsWith('!')) { spread = 'single'; line = line.slice(1).trim(); }
     }
-
     let alt = null;
     if (comicMode) {
       const idx = line.indexOf('|');
@@ -1363,10 +1306,7 @@ function parseOrdFile(ordPath, comicMode = false) {
         line = line.slice(0, idx).trim();
       }
     }
-
-    if (line) {
-      entries.push({ path: line, alt, spread });
-    }
+    if (line) entries.push({ path: line, alt, spread });
   }
   return entries;
 }
@@ -1374,14 +1314,14 @@ function parseOrdFile(ordPath, comicMode = false) {
 function writeOrdFile(ordPath, entries, comicMode = false) {
   const lines = [];
   if (comicMode) {
-    lines.push('# Daftar urutan halaman (satu baris satu .xhtml, path relatif dari EPUB/xhtmls/)');
+    lines.push('# Page order list (one .xhtml per line, path relative to EPUB/xhtmls/)');
     lines.push('# Format: [*|!]path [| alt-text]');
     lines.push('#   *  = force page-spread-center (double spread)');
     lines.push('#   !  = force single spread');
-    lines.push('#   (tanpa prefix) = auto-detect');
+    lines.push('#   (no prefix) = auto-detect');
     lines.push('');
   } else {
-    lines.push('# Daftar urutan bab (satu baris satu .xhtml)');
+    lines.push('# Chapter order list (one .xhtml per line)');
     lines.push('');
   }
   for (const e of entries) {
@@ -1396,7 +1336,7 @@ function writeOrdFile(ordPath, entries, comicMode = false) {
   fs.writeFileSync(ordPath, lines.join('\n') + '\n', 'utf8');
 }
 
-// ─── Generate XHTML from image ─────────────────────────────────────────
+// ─── XHTML from image ─────────────────────────────────────────────────
 function generatePageXhtml(imgHref, altText, w, h, fitMode = 'contain', cssLinks = '') {
   const viewport = (w && h) ? `width=${w}, height=${h}` : 'width=device-width, initial-scale=1';
   const fitCSS = {
@@ -1429,7 +1369,7 @@ function generatePageXhtml(imgHref, altText, w, h, fitMode = 'contain', cssLinks
 `;
 }
 
-// ─── Sync XHTML dari images ────────────────────────────────────────────
+// ─── Sync XHTML from images ────────────────────────────────────────────
 async function syncXhtmlFromImages(epubDir, opts = {}) {
   const silent = opts.silent === true;
   const force = opts.force === true;
@@ -1484,9 +1424,7 @@ async function syncXhtmlFromImages(epubDir, opts = {}) {
           const fitChanged = existingFit !== fitMode;
           const contentHasCss = /\.css["']/.test(content);
           const cssChanged = hasCss && !contentHasCss;
-          if (!fitChanged && !cssChanged) {
-            needGen = false;
-          }
+          if (!fitChanged && !cssChanged) needGen = false;
         }
       } catch (_) { needGen = true; }
     }
@@ -1498,19 +1436,24 @@ async function syncXhtmlFromImages(epubDir, opts = {}) {
       continue;
     }
 
+    if (OPTS.dryRun) {
+      generated++;
+      generatedPaths.push(epubPathToPosix(relXhtml));
+      if (!silent) log(`[dry] Would generate: ${xhtmlPath}`, 'info');
+      continue;
+    }
+
     const size = getImageSize(imgPath) || { width: 1200, height: 1600 };
     const xhtml = generatePageXhtml(imgHref, '', size.width, size.height, fitMode, cssLinks);
     fs.writeFileSync(xhtmlPath, xhtml, 'utf8');
     generated++;
     generatedPaths.push(epubPathToPosix(relXhtml));
-
     if (!silent) logI18n('img2x_generated', { file: xhtmlPath }, 'success');
   }
 
   return { generated, skipped, total: images.length, generatedPaths };
 }
 
-// ─── Chapter info extraction ───────────────────────────────────────────
 function getChapterKey(relXhtmlPath) {
   const parts = relXhtmlPath.split(/[\\/]/);
   if (parts.length <= 1) return null;
@@ -1523,7 +1466,7 @@ function safeParseConfig() {
   try { return parseConfig(p); } catch (_) { return null; }
 }
 
-// ─── Command: convertch img2xhtml ──────────────────────────────────────
+// ─── img2xhtml command ────────────────────────────────────────────────
 async function cmdImg2Xhtml(argv) {
   const epubDir = path.join(process.cwd(), 'EPUB');
   if (!fs.existsSync(epubDir)) {
@@ -1552,21 +1495,40 @@ async function cmdImg2Xhtml(argv) {
 
   const result = await syncXhtmlFromImages(epubDir, { silent: false, force, fitMode, cssRelPaths });
 
+  // Alt text check
+  const ordPathCheck = path.join(process.cwd(), 'ord.txt');
+  if (fs.existsSync(ordPathCheck)) {
+    const entries = parseOrdFile(ordPathCheck, true);
+    for (const e of entries) {
+      if (!e.alt) {
+        logI18n('img2x_alt_missing', { file: e.path }, 'warn');
+      }
+    }
+  }
+
   const ordPath = path.join(process.cwd(), 'ord.txt');
   const ordExists = fs.existsSync(ordPath);
 
   if (!ordExists) {
-    const entries = naturalSort(result.generatedPaths).map(p => ({ path: p, alt: null, spread: null }));
-    writeOrdFile(ordPath, entries, true);
-    logI18n('img2x_ord_created', { file: ordPath }, 'success');
-  } else if (regenOrd || force) {
-    const ans = await question(t('img2x_ord_regen_confirm'));
-    if (ans.trim().toLowerCase() === 'y') {
+    if (OPTS.dryRun) {
+      log(`[dry] Would create ord.txt with ${result.generatedPaths.length} entries`, 'info');
+    } else {
       const entries = naturalSort(result.generatedPaths).map(p => ({ path: p, alt: null, spread: null }));
       writeOrdFile(ordPath, entries, true);
-      logI18n('img2x_ord_regen', { file: ordPath }, 'success');
+      logI18n('img2x_ord_created', { file: ordPath }, 'success');
+    }
+  } else if (regenOrd || force) {
+    if (OPTS.dryRun) {
+      log('[dry] Would regenerate ord.txt', 'info');
     } else {
-      logI18n('img2x_ord_cancelled', {}, 'warn');
+      const ans = await question(t('img2x_ord_regen_confirm'));
+      if (ans.trim().toLowerCase() === 'y') {
+        const entries = naturalSort(result.generatedPaths).map(p => ({ path: p, alt: null, spread: null }));
+        writeOrdFile(ordPath, entries, true);
+        logI18n('img2x_ord_regen', { file: ordPath }, 'success');
+      } else {
+        logI18n('img2x_ord_cancelled', {}, 'warn');
+      }
     }
   } else {
     const existing = parseOrdFile(ordPath, true);
@@ -1574,12 +1536,12 @@ async function cmdImg2Xhtml(argv) {
     const newEntries = [];
     for (const p of naturalSort(result.generatedPaths)) {
       const norm = epubPathToPosix(p);
-      if (!existingSet.has(norm)) {
-        newEntries.push({ path: norm, alt: null, spread: null });
-      }
+      if (!existingSet.has(norm)) newEntries.push({ path: norm, alt: null, spread: null });
     }
     if (newEntries.length === 0) {
       logI18n('img2x_ord_skip', {}, 'info');
+    } else if (OPTS.dryRun) {
+      log(`[dry] Would append ${newEntries.length} entries to ord.txt`, 'info');
     } else {
       const ans = await question(t('img2x_ord_exists'));
       if (ans.trim().toLowerCase() === 'y') {
@@ -1598,34 +1560,41 @@ async function cmdImg2Xhtml(argv) {
     total: result.total,
   }, 'info');
 
+  emitJson({
+    ok: true,
+    generated: result.generated,
+    skipped: result.skipped,
+    total: result.total,
+    dryRun: OPTS.dryRun,
+  });
+
   closeRL();
 }
 
-// ─── Chapter title detection ───────────────────────────────────────────
 function chapterTitleFromFolderOrOverride(epubDir, folder) {
   const override = readChapterTitleOverride(path.join(epubDir, 'xhtmls', folder));
   if (override) return override;
   return chapterTitleFromFolder(folder);
 }
 
-// ─── Collect comic pages ───────────────────────────────────────────────
 function collectComicPages(epubDir, ordPath) {
   const xhtmlsDir = path.join(epubDir, 'xhtmls');
-  if (!fs.existsSync(xhtmlsDir)) {
-    return [];
-  }
+  if (!fs.existsSync(xhtmlsDir)) return [];
 
   const allXhtml = walkFilesRecursive(xhtmlsDir, (p) => p.toLowerCase().endsWith('.xhtml'));
   if (allXhtml.length === 0) return [];
 
   const xhtmlRelSet = new Set(allXhtml.map(f => epubPathToPosix(path.relative(xhtmlsDir, f))));
-
   const ordEntries = parseOrdFile(ordPath, true);
   let ordered = [];
 
   if (ordEntries.length > 0) {
     for (const e of ordEntries) {
       const norm = epubPathToPosix(e.path);
+      if (!isSafeRelative(norm)) {
+        logI18n('ord_unsafe_path', { file: e.path }, 'warn');
+        continue;
+      }
       if (xhtmlRelSet.has(norm)) {
         ordered.push({ relPath: norm, alt: e.alt, spread: e.spread });
       } else {
@@ -1634,9 +1603,7 @@ function collectComicPages(epubDir, ordPath) {
     }
     const orderedSet = new Set(ordered.map(o => o.relPath));
     const leftovers = naturalSort([...xhtmlRelSet].filter(p => !orderedSet.has(p)));
-    for (const p of leftovers) {
-      ordered.push({ relPath: p, alt: null, spread: null });
-    }
+    for (const p of leftovers) ordered.push({ relPath: p, alt: null, spread: null });
   } else {
     ordered = naturalSort([...xhtmlRelSet]).map(p => ({ relPath: p, alt: null, spread: null }));
   }
@@ -1644,7 +1611,6 @@ function collectComicPages(epubDir, ordPath) {
   return ordered;
 }
 
-// ─── Collect back-matter XHTML ─────────────────────────────────────────
 function collectBackMatter(epubDir) {
   const exclude = ['cover.xhtml', 'toc.xhtml', 'nav.xhtml', 'volume.opf'];
   const result = [];
@@ -1670,7 +1636,6 @@ function collectBackMatter(epubDir) {
   return naturalSort(result.map(r => r.path)).map(p => result.find(r => r.path === p));
 }
 
-// ─── Double-spread detection ───────────────────────────────────────────
 function detectDoubleSpread(epubDir, relPagePath) {
   const imgDir = path.join(epubDir, 'images', 'pages');
   const ext = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg'];
@@ -1691,7 +1656,7 @@ function detectDoubleSpread(epubDir, relPagePath) {
   return { double: false, ratio: 1 };
 }
 
-// ─── XHTML renderer ────────────────────────────────────────────────────
+// ─── Marked renderer ──────────────────────────────────────────────────
 function createXhtmlRenderer(marked) {
   const renderer = new marked.Renderer();
   renderer.image = function(href, title, text) {
@@ -1705,15 +1670,14 @@ function createXhtmlRenderer(marked) {
   return renderer;
 }
 
+// ─── DOCX mapping ─────────────────────────────────────────────────────
 function readDocxMapping() {
   const configPath = path.join(process.cwd(), 'config.txt');
   if (!fs.existsSync(configPath)) return null;
-
   const content = fs.readFileSync(configPath, 'utf8');
   const lines = content.split('\n');
   let inSection = false;
   const mapping = {};
-
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
@@ -1731,7 +1695,6 @@ function readDocxMapping() {
       }
     }
   }
-
   return Object.keys(mapping).length > 0 ? mapping : null;
 }
 
@@ -1743,7 +1706,6 @@ function adjustHeadings(html, mapping) {
     modified = modified.replace(/<p\s+class="heading3"[^>]*>([\s\S]*?)<\/p>/gi, '<h3>$1</h3>');
     return modified;
   }
-
   const thresholds = [
     { level: 1, size: mapping.heading1 || 24 },
     { level: 2, size: mapping.heading2 || 18 },
@@ -1751,10 +1713,7 @@ function adjustHeadings(html, mapping) {
   ].sort((a, b) => b.size - a.size);
 
   let useCheerio = false;
-  try {
-    require.resolve('cheerio');
-    useCheerio = true;
-  } catch (_) {}
+  try { require.resolve('cheerio'); useCheerio = true; } catch (_) {}
 
   if (useCheerio) {
     const cheerio = require('cheerio');
@@ -1766,14 +1725,11 @@ function adjustHeadings(html, mapping) {
         if (match) {
           const size = parseInt(match[1]);
           let level = 0;
-          for (const th of thresholds) {
-            if (size >= th.size) { level = th.level; break; }
-          }
+          for (const th of thresholds) { if (size >= th.size) { level = th.level; break; } }
           if (level > 0) {
             const $el = $(el);
             const content = $el.html();
-            const newTag = `<h${level}>${content}</h${level}>`;
-            $el.replaceWith(newTag);
+            $el.replaceWith(`<h${level}>${content}</h${level}>`);
           }
         }
       }
@@ -1781,16 +1737,11 @@ function adjustHeadings(html, mapping) {
     return $.html();
   } else {
     const pRegex = /<p\s+([^>]*style="[^"]*font-size:(\d+)pt[^"]*"[^>]*)>([\s\S]*?)<\/p>/gi;
-    let modified = html;
-    modified = modified.replace(pRegex, (match, attrs, sizeStr, content) => {
+    let modified = html.replace(pRegex, (match, attrs, sizeStr, content) => {
       const size = parseInt(sizeStr);
       let level = 0;
-      for (const th of thresholds) {
-        if (size >= th.size) { level = th.level; break; }
-      }
-      if (level > 0) {
-        return `<h${level}>${content}</h${level}>`;
-      }
+      for (const th of thresholds) { if (size >= th.size) { level = th.level; break; } }
+      if (level > 0) return `<h${level}>${content}</h${level}>`;
       return match;
     });
     if (!adjustHeadings._warned) {
@@ -1801,14 +1752,10 @@ function adjustHeadings(html, mapping) {
   }
 }
 
-// ─── Download & ekstrak ───────────────────────────────────────────────
+// ─── Download & extract ───────────────────────────────────────────────
 function isTarAvailable() {
-  try {
-    execSync('tar --version', { stdio: 'ignore' });
-    return true;
-  } catch (_) {
-    return false;
-  }
+  try { execSync('tar --version', { stdio: 'ignore' }); return true; }
+  catch (_) { return false; }
 }
 
 function downloadFile(url, destPath) {
@@ -1817,10 +1764,7 @@ function downloadFile(url, destPath) {
     const request = https.get(url, (response) => {
       if (response.statusCode === 302 || response.statusCode === 301) {
         const redirectUrl = response.headers.location;
-        if (!redirectUrl) {
-          reject(new Error('Redirect without location header'));
-          return;
-        }
+        if (!redirectUrl) { reject(new Error('Redirect without location header')); return; }
         downloadFile(redirectUrl, destPath).then(resolve).catch(reject);
         return;
       }
@@ -1829,69 +1773,38 @@ function downloadFile(url, destPath) {
         return;
       }
       response.pipe(file);
-      file.on('finish', () => {
-        file.close();
-        resolve();
-      });
-      file.on('error', (err) => {
-        fs.unlink(destPath, () => {});
-        reject(err);
-      });
+      file.on('finish', () => { file.close(); resolve(); });
+      file.on('error', (err) => { fs.unlink(destPath, () => {}); reject(err); });
     });
-    request.on('error', (err) => {
-      fs.unlink(destPath, () => {});
-      reject(err);
-    });
+    request.on('error', (err) => { fs.unlink(destPath, () => {}); reject(err); });
     request.end();
   });
 }
 
 function extractTarGz(tarballPath, destDir = '.', stripComponents = 0, srcPath = '') {
   return new Promise((resolve, reject) => {
-    if (!isTarAvailable()) {
-      reject(new Error(t('tar_not_found')));
-      return;
-    }
-
+    if (!isTarAvailable()) { reject(new Error(t('tar_not_found'))); return; }
     let entries;
     try {
       const out = execFileSync('tar', ['-tzf', tarballPath], { encoding: 'utf8' });
       entries = out.split('\n').map(s => s.trim()).filter(Boolean);
-    } catch (err) {
-      reject(new Error(`Failed to list archive: ${err.message}`));
-      return;
-    }
-    if (entries.length === 0) {
-      reject(new Error('Archive is empty or invalid'));
-      return;
-    }
-
+    } catch (err) { reject(new Error(`Failed to list archive: ${err.message}`)); return; }
+    if (entries.length === 0) { reject(new Error('Archive is empty or invalid')); return; }
     const topFolder = entries[0].split('/')[0];
-    if (!topFolder) {
-      reject(new Error('Cannot determine top-level folder'));
-      return;
-    }
-
+    if (!topFolder) { reject(new Error('Cannot determine top-level folder')); return; }
     let targetArg = null;
     if (srcPath) {
       const needle = `${topFolder}/${srcPath}`;
       const found = entries.some(e => e === needle || e.startsWith(needle + '/'));
-      if (!found) {
-        reject(new Error(t('extract_no_assets')));
-        return;
-      }
+      if (!found) { reject(new Error(t('extract_no_assets'))); return; }
       targetArg = needle;
     }
-
     const args = ['-xzf', tarballPath, `--strip-components=${stripComponents}`, '-C', destDir];
     if (targetArg) args.push(targetArg);
-
     try {
       execFileSync('tar', args, { stdio: 'inherit' });
       resolve();
-    } catch (err) {
-      reject(err);
-    }
+    } catch (err) { reject(err); }
   });
 }
 
@@ -1905,16 +1818,13 @@ async function downloadAndExtract(url, destDir, srcPath, stripComponents = 0) {
   } catch (err) {
     throw err;
   } finally {
-    if (fs.existsSync(tarballPath)) {
-      fs.unlinkSync(tarballPath);
-    }
+    if (fs.existsSync(tarballPath)) fs.unlinkSync(tarballPath);
   }
 }
 
-// ─── Command: createdir ────────────────────────────────────────────────
+// ─── createdir ────────────────────────────────────────────────────────
 async function cmdCreateDir(argv) {
   const cwd = process.cwd();
-
   const settings = loadSettings();
   let typeArg = argv.find(a => !a.startsWith('--'));
   let type = typeArg ? typeArg.toLowerCase() : null;
@@ -1924,17 +1834,13 @@ async function cmdCreateDir(argv) {
     const ans = await question(t('createdir_type_prompt', { default: def }));
     type = (ans.trim() || def).toLowerCase();
   }
-
   if (!VALID_TYPES.includes(type)) {
     logI18n('createdir_invalid_type', { type }, 'warn');
     type = 'textbook';
   }
 
-  if (type === 'textbook') {
-    await createTextbookStructure();
-  } else {
-    await createComicStructure(type);
-  }
+  if (type === 'textbook') await createTextbookStructure();
+  else await createComicStructure(type);
 
   const epubCreatorDir = path.join(cwd, TOOL_DIR);
   if (fs.existsSync(epubCreatorDir)) {
@@ -2017,7 +1923,7 @@ async function createTextbookStructure() {
     }
   }
 
-  const ordTemplate = '# Daftar urutan bab (satu baris satu .xhtml)\n';
+  const ordTemplate = '# Chapter order list (one .xhtml per line)\n';
   if (!fs.existsSync(ordPath)) {
     fs.writeFileSync(ordPath, ordTemplate, 'utf8');
     logI18n('created', { file: 'ord.txt' }, 'success');
@@ -2085,18 +1991,18 @@ async function createComicStructure(type) {
   }
 
   const ordTemplate = [
-    '# Daftar urutan halaman (satu baris satu .xhtml, path relatif dari EPUB/xhtmls/)',
+    '# Page order list (one .xhtml per line, path relative to EPUB/xhtmls/)',
     '# Format: [*|!]path [| alt-text]',
     '#   *  = force page-spread-center (double spread)',
     '#   !  = force single spread',
-    '#   (tanpa prefix) = auto-detect',
+    '#   (no prefix) = auto-detect',
     '#',
-    '# Contoh:',
-    '#   ch1/0001.xhtml | Haruko masuk ke kafe',
-    '#   ch1/0002.xhtml | "Kamu ke mana?"',
+    '# Example:',
+    '#   ch1/0001.xhtml | Haruko enters the cafe',
+    '#   ch1/0002.xhtml | "Where did you go?"',
     '#   *ch2/0001.xhtml | Double spread opening',
     '#',
-    '# Kosongkan file ini untuk auto-sort. Jalankan "convertch img2xhtml" untuk generate otomatis.',
+    '# Leave empty for auto-sort. Run "convertch img2xhtml" to generate automatically.',
     '',
   ].join('\n');
 
@@ -2121,57 +2027,57 @@ async function createComicStructure(type) {
 
 function buildTextbookConfigTemplate() {
   return `# ============================================================
-#  METADATA BUKU  -  edit nilai di bawah ini sesuai kebutuhan
+#  BOOK METADATA - edit values below as needed
 # ============================================================
 
-# Tipe buku: textbook | comic | manga
+# Book type: textbook | comic | manga
 type: textbook
 
-# Judul utama (wajib)
-title: Judul Buku
+# Main title (required)
+title: Book Title
 
-# Subjudul (opsional)
-subtitle: Subjudul
+# Subtitle (optional)
+subtitle: Subtitle
 
-# Volume / jilid (opsional)
+# Volume (optional)
 volume: Vol. 1
 
-# Penulis / creator (wajib)
-author: Nama Penulis
+# Author (required)
+author: Author Name
 
-# Bahasa (default: en)
+# Language (default: en)
 language: en
 
-# Identifier unik (URN atau ISBN), kosongkan untuk otomatis
+# Unique identifier (URN or ISBN), leave empty for auto
 identifier: 
 
-# Tanggal terbit (YYYY-MM-DD), kosongkan pakai hari ini
+# Publish date (YYYY-MM-DD), leave empty for today
 date: 
 
-# Penerbit (opsional)
+# Publisher (optional)
 publisher: 
 
-# Deskripsi / sinopsis (opsional)
-description: Deskripsi singkat buku ini.
+# Description / synopsis (optional)
+description: Short description of the book.
 
-# Subjek / kategori, pisahkan dengan koma
-subjects: Fiksi, Petualangan
+# Subjects / categories, comma separated
+subjects: Fiction, Adventure
 
-# Nama seri (opsional)
+# Series name (optional)
 series_name: 
 
-# Nomor seri (opsional)
+# Series number (optional)
 series_number: 
 
-# Kontributor tambahan: nama|peran, nama|peran, ...
-# Peran: aut (penulis), edt (editor), ill (ilustrator), dll.
+# Additional contributors: name|role, name|role, ...
+# Roles: aut (author), edt (editor), ill (illustrator), etc.
 contributors: 
 
-# Judul tambahan (opsional), pisahkan dengan koma
+# Extra titles (optional), comma separated
 extra_titles: 
 
 # ============================================================
-#  KONVERSI DOCX -> MARKDOWN (opsional)
+#  DOCX -> MARKDOWN CONVERSION (optional)
 # ============================================================
 # [docx-mapping]
 # heading1 = 24
@@ -2179,113 +2085,113 @@ extra_titles:
 # heading3 = 14
 
 # ============================================================
-#  STRUKTUR DIREKTORI (textbook):
+#  DIRECTORY STRUCTURE (textbook):
 #
 #   ./
 #   |-- config.txt
-#   |-- ord.txt          <- opsional
-#   |-- Docs/            <- .docx sumber
-#   |-- Markdowns/       <- .md sumber
+#   |-- ord.txt          <- optional
+#   |-- Docs/            <- source .docx
+#   |-- Markdowns/       <- source .md
 #   |-- EPUB/
 #       |-- images/
-#       |   |-- cover.png   <- WAJIB ada
-#       |-- audiovideo/     <- opsional
-#       |-- bab1.xhtml      <- bab (di root EPUB/)
+#       |   |-- cover.png   <- REQUIRED
+#       |-- audiovideo/     <- optional
+#       |-- bab1.xhtml      <- chapters (in EPUB/ root)
 #
-#  Jalankan:  node epubcreator.js build
+#  Run:  node epubcreator.js build
 # ============================================================
 `;
 }
 
 function buildComicConfigTemplate(type, direction) {
   return `# ============================================================
-#  METADATA BUKU  -  edit nilai di bawah ini sesuai kebutuhan
+#  BOOK METADATA - edit values below as needed
 # ============================================================
 
-# Tipe buku: textbook | comic | manga
+# Book type: textbook | comic | manga
 type: ${type}
 
-# Arah baca: ltr | rtl
+# Reading direction: ltr | rtl
 reading_direction: ${direction}
 
-# Sifat spread: auto | none | landscape | both
+# Spread behavior: auto | none | landscape | both
 spread: auto
 
-# Fit mode gambar halaman: contain | cover | width | height | none
+# Image fit mode: contain | cover | width | height | none
 fit_mode: contain
 
-# CSS custom (opsional). Kosongkan untuk auto-detect dari EPUB/styles/
+# Custom CSS (optional). Leave empty to auto-detect from EPUB/styles/
 custom_css: 
 
-# Judul utama (wajib)
-title: Judul Komik
+# Main title (required)
+title: Comic Title
 
-# Subjudul (opsional)
+# Subtitle (optional)
 subtitle: 
 
-# Volume / jilid (opsional)
+# Volume (optional)
 volume: 
 
-# Penulis / creator (wajib)
-author: Nama Penulis
+# Author (required)
+author: Author Name
 
-# Bahasa (default: en)
+# Language (default: en)
 language: en
 
-# Identifier unik, kosongkan untuk otomatis
+# Unique identifier, leave empty for auto
 identifier: 
 
-# Tanggal terbit (YYYY-MM-DD)
+# Publish date (YYYY-MM-DD)
 date: 
 
-# Penerbit (opsional)
+# Publisher (optional)
 publisher: 
 
-# Deskripsi / sinopsis (opsional)
+# Description / synopsis (optional)
 description: 
 
-# Subjek / kategori, pisahkan dengan koma
+# Subjects / categories, comma separated
 subjects: 
 
-# Nama seri (opsional)
+# Series name (optional)
 series_name: 
 
-# Nomor seri (opsional)
+# Series number (optional)
 series_number: 
 
-# Kontributor tambahan: nama|peran, nama|peran
+# Additional contributors: name|role, name|role
 contributors: 
 
-# Judul tambahan (opsional)
+# Extra titles (optional)
 extra_titles: 
 
 # ============================================================
-#  STRUKTUR DIREKTORI (comic/manga):
+#  DIRECTORY STRUCTURE (comic/manga):
 #
 #   ./
 #   |-- config.txt
-#   |-- ord.txt             <- opsional: [*|!]path [| alt]
+#   |-- ord.txt             <- optional: [*|!]path [| alt]
 #   |-- EPUB/
 #       |-- images/
-#       |   |-- cover.jpg   <- WAJIB ada
+#       |   |-- cover.jpg   <- REQUIRED
 #       |   |-- pages/
 #       |       |-- ch1/
 #       |       |   |-- 0001.jpg
 #       |       |-- ch2/
 #       |           |-- 0001.jpg
-#       |-- xhtmls/         <- auto-generate via "convertch img2xhtml"
-#       |-- styles/         <- opsional custom CSS
-#       |-- about.xhtml     <- back-matter (opsional, reflowable)
+#       |-- xhtmls/         <- auto-generated by "convertch img2xhtml"
+#       |-- styles/         <- optional custom CSS
+#       |-- about.xhtml     <- back-matter (optional, reflowable)
 #
-#  Alur:
-#    1. Taruh gambar halaman di EPUB/images/pages/
+#  Flow:
+#    1. Put page images at EPUB/images/pages/
 #    2. node epubcreator.js convertch img2xhtml
 #    3. node epubcreator.js build
 # ============================================================
 `;
 }
 
-// ─── Konversi MD->XHTML ──────────────────────────────────────────────
+// ─── MD -> XHTML ──────────────────────────────────────────────────────
 async function convertOneMdFile(mdFile, outputDir, force = false, marked) {
   const markdownsBase = path.join(process.cwd(), 'Markdowns');
   let relToMarkdowns = '';
@@ -2297,6 +2203,18 @@ async function convertOneMdFile(mdFile, outputDir, force = false, marked) {
   const xhtmlFile = path.join(outputDir, relToMarkdowns.replace(/\.md$/i, '.xhtml'));
   const xhtmlDir = path.dirname(xhtmlFile);
   ensureDir(xhtmlDir);
+
+  // Incremental: skip if xhtml newer than md
+  if (!force && fs.existsSync(xhtmlFile)) {
+    try {
+      const mdStat = fs.statSync(mdFile);
+      const xhStat = fs.statSync(xhtmlFile);
+      if (xhStat.mtimeMs >= mdStat.mtimeMs) {
+        logI18n('convert_incremental_skip', { file: path.basename(xhtmlFile) }, 'info');
+        return true;
+      }
+    } catch (_) { /* fall through to prompt */ }
+  }
 
   const xhtmlExists = fs.existsSync(xhtmlFile);
   if (!force && xhtmlExists) {
@@ -2320,14 +2238,13 @@ async function convertOneMdFile(mdFile, outputDir, force = false, marked) {
 
   const mdContent = fs.readFileSync(mdFile, 'utf8');
   let title = extractTitleFromMd(mdContent);
-  if (!title) {
-    title = path.basename(mdFile, '.md');
-  }
+  if (!title) title = path.basename(mdFile, '.md');
 
   const renderer = createXhtmlRenderer(marked);
   let htmlContent;
   try {
     htmlContent = marked.parse(mdContent, { renderer });
+    htmlContent = sanitizeHtmlContent(htmlContent);
   } catch (err) {
     logI18n('convert_fail', { file: path.basename(mdFile), error: err.message }, 'error');
     return false;
@@ -2346,6 +2263,11 @@ async function convertOneMdFile(mdFile, outputDir, force = false, marked) {
 </body>
 </html>
 `;
+
+  if (OPTS.dryRun) {
+    log(`[dry] Would write: ${xhtmlFile}`, 'info');
+    return true;
+  }
 
   fs.writeFileSync(xhtmlFile, xhtml, 'utf8');
   logI18n('convert_success', { file: xhtmlFile }, 'success');
@@ -2367,7 +2289,7 @@ async function convertAllMd(markdownsDir, epubDir, force, marked) {
   return successCount;
 }
 
-async function cmdConvertCh(filePath, force = false, marked) {
+async function cmdConvertCh(filePath, force = false, marked, forceAll = false) {
   let target;
   if (!filePath) {
     target = path.join(process.cwd(), 'Markdowns');
@@ -2385,6 +2307,11 @@ async function cmdConvertCh(filePath, force = false, marked) {
     }
   }
 
+  if (forceAll) {
+    logI18n('convert_incremental_force_all', {}, 'info');
+    force = true;
+  }
+
   const stat = fs.statSync(target);
   const outputDir = path.join(process.cwd(), 'EPUB');
   ensureDir(outputDir);
@@ -2395,7 +2322,8 @@ async function cmdConvertCh(filePath, force = false, marked) {
       closeRL();
       return;
     }
-    await convertOneMdFile(target, outputDir, force, marked);
+    const ok = await convertOneMdFile(target, outputDir, force, marked);
+    emitJson({ ok: !!ok, file: target });
     closeRL();
     return;
   }
@@ -2409,36 +2337,42 @@ async function cmdConvertCh(filePath, force = false, marked) {
     }
     logI18n('md_count', { count: mdFiles.length }, 'info');
 
+    // Incremental check for batch prompt — only prompt if files are out of date
     let overwriteAll = force;
-    const existing = mdFiles.filter(f => {
-      const rel = path.relative(target, f);
-      const xhtmlPath = path.join(outputDir, rel.replace(/\.md$/i, '.xhtml'));
-      return fs.existsSync(xhtmlPath);
-    });
-    if (!force && existing.length > 0) {
-      const answer = await question(t('xhtml_exists', { count: existing.length }));
-      const choice = (answer || '').toLowerCase();
-      if (choice === 'c') {
-        logI18n('convert_cancelled', {}, 'warn');
-        closeRL();
-        return;
-      } else if (choice === 'n') {
-        for (const md of mdFiles) {
-          const rel = path.relative(target, md);
-          const markdownsDest = path.join(process.cwd(), 'Markdowns', rel);
-          ensureDir(path.dirname(markdownsDest));
-          if (!fs.existsSync(markdownsDest)) {
-            fs.copyFileSync(md, markdownsDest);
-            logI18n('copy_md', { file: path.basename(md), dest: markdownsDest }, 'info');
-          } else {
-            logI18n('md_already_exists', { file: path.basename(md) }, 'info');
+    if (!force) {
+      const stale = mdFiles.filter(f => {
+        const rel = path.relative(target, f);
+        const xhtmlPath = path.join(outputDir, rel.replace(/\.md$/i, '.xhtml'));
+        if (!fs.existsSync(xhtmlPath)) return false;
+        try {
+          return fs.statSync(f).mtimeMs > fs.statSync(xhtmlPath).mtimeMs;
+        } catch (_) { return true; }
+      });
+      if (stale.length > 0) {
+        const answer = await question(t('xhtml_exists', { count: stale.length }));
+        const choice = (answer || '').toLowerCase();
+        if (choice === 'c') {
+          logI18n('convert_cancelled', {}, 'warn');
+          closeRL();
+          return;
+        } else if (choice === 'n') {
+          for (const md of mdFiles) {
+            const rel = path.relative(target, md);
+            const markdownsDest = path.join(process.cwd(), 'Markdowns', rel);
+            ensureDir(path.dirname(markdownsDest));
+            if (!fs.existsSync(markdownsDest)) {
+              fs.copyFileSync(md, markdownsDest);
+              logI18n('copy_md', { file: path.basename(md), dest: markdownsDest }, 'info');
+            } else {
+              logI18n('md_already_exists', { file: path.basename(md) }, 'info');
+            }
           }
+          logI18n('copy_done', { count: mdFiles.length }, 'info');
+          closeRL();
+          return;
+        } else {
+          overwriteAll = true;
         }
-        logI18n('copy_done', { count: mdFiles.length }, 'info');
-        closeRL();
-        return;
-      } else {
-        overwriteAll = true;
       }
     }
 
@@ -2450,11 +2384,12 @@ async function cmdConvertCh(filePath, force = false, marked) {
     logI18n('convert_summary', { success: successCount, total: mdFiles.length }, 'info');
 
     const settings = loadSettings();
-    if (settings.auto_build === 'true' && successCount > 0) {
+    if (settings.auto_build === 'true' && successCount > 0 && !OPTS.dryRun) {
       log('Auto-build enabled, building...', 'info');
       await buildEpub(require('archiver'));
     }
 
+    emitJson({ ok: true, converted: successCount, total: mdFiles.length, dryRun: OPTS.dryRun });
     closeRL();
     return;
   }
@@ -2463,15 +2398,12 @@ async function cmdConvertCh(filePath, force = false, marked) {
   closeRL();
 }
 
-// ─── XHTML->MD ─────────────────────────────────────────────────────────
+// ─── XHTML -> MD ──────────────────────────────────────────────────────
 function convertOneXhtmlFile(xhtmlFile, outputDir, TurndownService) {
   const epubBase = path.join(process.cwd(), 'EPUB');
   let relPath;
-  if (xhtmlFile.startsWith(epubBase)) {
-    relPath = path.relative(epubBase, xhtmlFile);
-  } else {
-    relPath = path.relative(process.cwd(), xhtmlFile);
-  }
+  if (xhtmlFile.startsWith(epubBase)) relPath = path.relative(epubBase, xhtmlFile);
+  else relPath = path.relative(process.cwd(), xhtmlFile);
   const mdFile = path.join(outputDir, relPath.replace(/\.xhtml$/i, '.md'));
   ensureDir(path.dirname(mdFile));
 
@@ -2492,8 +2424,11 @@ function convertOneXhtmlFile(xhtmlFile, outputDir, TurndownService) {
     strongDelimiter: '**',
   });
   let markdown = turndownService.turndown(bodyContent);
-  if (title) {
-    markdown = `## ${title}\n\n${markdown}`;
+  if (title) markdown = `## ${title}\n\n${markdown}`;
+
+  if (OPTS.dryRun) {
+    log(`[dry] Would write: ${mdFile}`, 'info');
+    return true;
   }
 
   fs.writeFileSync(mdFile, markdown, 'utf8');
@@ -2567,7 +2502,7 @@ async function cmdConvertX(filePath, TurndownService) {
   closeRL();
 }
 
-// ─── DOCX->MD ──────────────────────────────────────────────────────────
+// ─── DOCX -> MD ───────────────────────────────────────────────────────
 async function cmdDocxToMd(argv) {
   let input = './Docs';
   let output = './Markdowns/fromdocx';
@@ -2580,26 +2515,20 @@ async function cmdDocxToMd(argv) {
     if (arg === '--force' || arg === '-f') force = true;
     else if (arg === '--no-images') noImages = true;
     else if (arg === '--nosplit' || arg === '-n') nosplit = true;
-    else if (arg === '--output' && i + 1 < argv.length) {
-      output = argv[i + 1];
-      i++;
-    } else if (!arg.startsWith('--')) {
-      input = arg;
-    }
+    else if (arg === '--output' && i + 1 < argv.length) { output = argv[i + 1]; i++; }
+    else if (!arg.startsWith('--')) input = arg;
   }
 
   let mammoth;
-  try {
-    mammoth = require('mammoth');
-  } catch (_) {
+  try { mammoth = require('mammoth'); }
+  catch (_) {
     logI18n('missing_dep', { mod: 'mammoth', version: '1.6.0' }, 'error');
-    log('Install dengan: npm install mammoth@1.6.0', 'info');
+    log('Install with: npm install mammoth@1.6.0', 'info');
     closeRL();
     return;
   }
 
   const mapping = readDocxMapping();
-
   const inputPath = path.resolve(process.cwd(), input);
   let docxFiles = [];
   if (fs.existsSync(inputPath)) {
@@ -2610,9 +2539,7 @@ async function cmdDocxToMd(argv) {
       const files = fs.readdirSync(inputPath);
       for (const f of files) {
         const full = path.join(inputPath, f);
-        if (fs.statSync(full).isFile() && f.toLowerCase().endsWith('.docx')) {
-          docxFiles.push(full);
-        }
+        if (fs.statSync(full).isFile() && f.toLowerCase().endsWith('.docx')) docxFiles.push(full);
       }
     } else {
       logI18n('invalid_path', { path: inputPath }, 'error');
@@ -2631,29 +2558,18 @@ async function cmdDocxToMd(argv) {
     return;
   }
 
-  if (nosplit) {
-    logI18n('docx_nosplit_mode', {}, 'info');
-  }
+  if (nosplit) logI18n('docx_nosplit_mode', {}, 'info');
 
   const isMultiple = docxFiles.length > 1;
   for (const docxFile of docxFiles) {
     const baseName = path.basename(docxFile, '.docx');
-    let outDir;
-    if (isMultiple) {
-      outDir = path.join(output, baseName);
-    } else {
-      outDir = output;
-    }
+    let outDir = isMultiple ? path.join(output, baseName) : output;
     ensureDir(outDir);
-
     logI18n('docx_processing', { file: path.basename(docxFile) }, 'info');
 
     try {
       const result = await mammoth.convertToHtml({ path: docxFile });
-      let html = result.value;
-
-      const modifiedHtml = adjustHeadings(html, mapping);
-
+      const modifiedHtml = adjustHeadings(result.value, mapping);
       const TurndownService = require('turndown');
       const turndownService = new TurndownService({
         headingStyle: 'atx',
@@ -2663,11 +2579,8 @@ async function cmdDocxToMd(argv) {
         strongDelimiter: '**',
       });
       let markdown = turndownService.turndown(modifiedHtml);
-
       const parts = markdown.split(/(?=^##\s+)/m).filter(p => p.trim() !== '');
-      if (parts.length === 0) {
-        parts.push(markdown);
-      }
+      if (parts.length === 0) parts.push(markdown);
 
       if (nosplit) {
         const combined = parts.join('\n\n');
@@ -2679,8 +2592,8 @@ async function cmdDocxToMd(argv) {
             continue;
           }
         }
-        fs.writeFileSync(mdPath, combined, 'utf8');
-        logI18n('created', { file: mdPath }, 'success');
+        if (OPTS.dryRun) log(`[dry] Would write: ${mdPath}`, 'info');
+        else { fs.writeFileSync(mdPath, combined, 'utf8'); logI18n('created', { file: mdPath }, 'success'); }
       } else {
         for (let i = 0; i < parts.length; i++) {
           const content = parts[i];
@@ -2693,20 +2606,18 @@ async function cmdDocxToMd(argv) {
               continue;
             }
           }
-          fs.writeFileSync(mdPath, content, 'utf8');
-          logI18n('created', { file: mdPath }, 'success');
+          if (OPTS.dryRun) log(`[dry] Would write: ${mdPath}`, 'info');
+          else { fs.writeFileSync(mdPath, content, 'utf8'); logI18n('created', { file: mdPath }, 'success'); }
         }
       }
 
-      if (!noImages) {
-        logI18n('docx_no_images', {}, 'warn');
-      }
+      if (!noImages) logI18n('docx_no_images', {}, 'warn');
     } catch (err) {
       logI18n('convert_fail', { file: path.basename(docxFile), error: err.message }, 'error');
     }
   }
 
-  log('Selesai.', 'success');
+  logI18n('docx_done', {}, 'success');
   closeRL();
 }
 
@@ -2719,12 +2630,8 @@ async function cmdSplit(argv) {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--force' || arg === '-f') force = true;
-    else if (arg === '--output' && i + 1 < argv.length) {
-      outputDir = argv[i + 1];
-      i++;
-    } else if (!arg.startsWith('--')) {
-      inputPath = arg;
-    }
+    else if (arg === '--output' && i + 1 < argv.length) { outputDir = argv[i + 1]; i++; }
+    else if (!arg.startsWith('--')) inputPath = arg;
   }
 
   if (!inputPath) {
@@ -2768,15 +2675,13 @@ async function cmdSplit(argv) {
   }
 
   let successCount = 0;
+  let totalParts = 0;
   for (const mdFile of mdFiles) {
     logI18n('split_processing', { file: path.basename(mdFile) }, 'info');
-
     try {
       const content = fs.readFileSync(mdFile, 'utf8');
       const parts = content.split(/(?=^##\s+)/m).filter(p => p.trim() !== '');
-
       if (parts.length === 0) {
-        logI18n('split_no_heading', { file: path.basename(mdFile) }, 'warn');
         const baseName = path.basename(mdFile, '.md');
         const dest = path.join(outDir, `${baseName}.md`);
         if (fs.existsSync(dest) && !force) {
@@ -2786,8 +2691,9 @@ async function cmdSplit(argv) {
             continue;
           }
         }
-        fs.writeFileSync(dest, content, 'utf8');
-        logI18n('split_created', { file: dest }, 'success');
+        if (OPTS.dryRun) log(`[dry] Would write: ${dest}`, 'info');
+        else { fs.writeFileSync(dest, content, 'utf8'); logI18n('split_created', { file: dest }, 'success'); }
+        totalParts++;
         successCount++;
       } else {
         const baseName = path.basename(mdFile, '.md');
@@ -2802,8 +2708,9 @@ async function cmdSplit(argv) {
               continue;
             }
           }
-          fs.writeFileSync(dest, part, 'utf8');
-          logI18n('split_created', { file: dest }, 'success');
+          if (OPTS.dryRun) log(`[dry] Would write: ${dest}`, 'info');
+          else { fs.writeFileSync(dest, part, 'utf8'); logI18n('split_created', { file: dest }, 'success'); }
+          totalParts++;
         }
         logI18n('split_parts', { count: parts.length }, 'info');
         successCount++;
@@ -2813,7 +2720,9 @@ async function cmdSplit(argv) {
     }
   }
 
+  if (OPTS.dryRun) logI18n('split_dry', { count: totalParts, dir: outDir }, 'info');
   logI18n('split_summary', { success: successCount, total: mdFiles.length }, 'info');
+  emitJson({ ok: true, files: successCount, parts: totalParts, outputDir: outDir, dryRun: OPTS.dryRun });
   closeRL();
 }
 
@@ -2826,12 +2735,8 @@ async function cmdMerge(argv) {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--force' || arg === '-f') force = true;
-    else if (arg === '--output' && i + 1 < argv.length) {
-      outputFile = argv[i + 1];
-      i++;
-    } else if (!arg.startsWith('--')) {
-      inputPath = arg;
-    }
+    else if (arg === '--output' && i + 1 < argv.length) { outputFile = argv[i + 1]; i++; }
+    else if (!arg.startsWith('--')) inputPath = arg;
   }
 
   if (!inputPath) {
@@ -2871,10 +2776,16 @@ async function cmdMerge(argv) {
   }
 
   mdFiles.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-
   logI18n('merge_processing', { count: mdFiles.length }, 'info');
 
   const outPath = path.resolve(process.cwd(), outputFile);
+  if (OPTS.dryRun) {
+    logI18n('merge_dry', { count: mdFiles.length, output: outPath }, 'info');
+    emitJson({ ok: true, count: mdFiles.length, output: outPath, dryRun: true });
+    closeRL();
+    return;
+  }
+
   if (fs.existsSync(outPath) && !force) {
     const ans = await question(t('file_exists', { file: path.basename(outPath) }));
     if ((ans || '').toLowerCase() !== 'y') {
@@ -2894,14 +2805,13 @@ async function cmdMerge(argv) {
   fs.writeFileSync(outPath, mergedContent, 'utf8');
   logI18n('merge_created', { file: outPath }, 'success');
   logI18n('merge_summary', { count: mdFiles.length, output: path.basename(outPath) }, 'info');
-
+  emitJson({ ok: true, count: mdFiles.length, output: outPath });
   closeRL();
 }
 
-// ─── Build core ────────────────────────────────────────────────────────
+// ─── Build core ───────────────────────────────────────────────────────
 async function buildEpub(archiver) {
   const cwd = process.cwd();
-
   const configPath = path.join(cwd, 'config.txt');
   if (!fs.existsSync(configPath)) {
     logI18n('config_not_found', {}, 'error');
@@ -2931,7 +2841,6 @@ async function buildEpub(archiver) {
   return await buildTextbookEpub(archiver, config, epubDir);
 }
 
-// ─── Build: textbook ──────────────────────────────────────────────────
 async function buildTextbookEpub(archiver, config, epubDir) {
   const cwd = process.cwd();
   const rootName = path.basename(cwd);
@@ -2945,18 +2854,28 @@ async function buildTextbookEpub(archiver, config, epubDir) {
   logI18n('chapters_found', { count: chapters.length }, 'info');
 
   const media = collectMedia(epubDir);
-  if (!media.cover) {
-    logI18n('cover_missing', {}, 'warn');
-  } else {
-    logI18n('cover_found', { file: media.cover }, 'info');
-  }
+  if (!media.cover) logI18n('cover_missing', {}, 'warn');
+  else logI18n('cover_found', { file: media.cover }, 'info');
   logI18n('media_summary', { images: media.images.length, audio: media.audio.length }, 'info');
 
   const buildsDir = path.join(cwd, 'builds');
   ensureDir(buildsDir);
-
   const epubFilename = `${rootName}.epub`;
   const epubPath = path.join(buildsDir, epubFilename);
+
+  if (OPTS.dryRun) {
+    logI18n('build_dry', {
+      file: epubPath,
+      chapters: chapters.length,
+      images: media.images.length,
+      audio: media.audio.length,
+    }, 'info');
+    emitJson({
+      ok: true, dryRun: true, path: epubPath,
+      chapters: chapters.length, images: media.images.length, audio: media.audio.length,
+    });
+    return;
+  }
 
   const opfContent = generateOpf(
     {
@@ -2991,9 +2910,9 @@ async function buildTextbookEpub(archiver, config, epubDir) {
     output.on('close', () => {
       const size = (archive.pointer() / 1024).toFixed(1);
       logI18n('epub_built', { path: epubPath, size }, 'success');
+      emitJson({ ok: true, path: epubPath, sizeKB: parseFloat(size), chapters: chapters.length });
       resolve();
     });
-
     archive.on('error', (err) => {
       logI18n('zip_error', { error: err.message }, 'error');
       reject(err);
@@ -3023,9 +2942,7 @@ async function buildTextbookEpub(archiver, config, epubDir) {
         const files = fs.readdirSync(subDir);
         for (const f of files) {
           const src = path.join(subDir, f);
-          if (fs.statSync(src).isFile()) {
-            archive.file(src, { name: `EPUB/${sub}/${f}` });
-          }
+          if (fs.statSync(src).isFile()) archive.file(src, { name: `EPUB/${sub}/${f}` });
         }
       }
     }
@@ -3041,7 +2958,6 @@ async function buildTextbookEpub(archiver, config, epubDir) {
   });
 }
 
-// ─── Build: comic / manga ─────────────────────────────────────────────
 async function buildComicEpub(archiver, config, epubDir, type) {
   const cwd = process.cwd();
   const rootName = path.basename(cwd);
@@ -3054,9 +2970,7 @@ async function buildComicEpub(archiver, config, epubDir, type) {
   logI18n('comic_mode', { type, direction, spread }, 'info');
 
   const cssRelPaths = collectCssFiles(epubDir, config);
-  if (cssRelPaths.length > 0) {
-    logI18n('comic_css_found', { list: cssRelPaths.join(', ') }, 'info');
-  }
+  if (cssRelPaths.length > 0) logI18n('comic_css_found', { list: cssRelPaths.join(', ') }, 'info');
 
   logI18n('comic_syncing', {}, 'info');
   await syncXhtmlFromImages(epubDir, { silent: true, force: false, fitMode, cssRelPaths });
@@ -3069,22 +2983,17 @@ async function buildComicEpub(archiver, config, epubDir, type) {
   logI18n('comic_pages_found', { count: pages.length }, 'info');
 
   const media = collectMediaComic(epubDir);
-  if (!media.cover) {
-    logI18n('cover_missing', {}, 'warn');
-  } else {
-    logI18n('cover_found', { file: media.cover }, 'info');
-  }
+  if (!media.cover) logI18n('cover_missing', {}, 'warn');
+  else logI18n('cover_found', { file: media.cover }, 'info');
   logI18n('media_summary', { images: media.pages.length + media.illustrations.length, audio: media.audio.length }, 'info');
 
   const backMatter = collectBackMatter(epubDir);
-
   const chapters = [];
   let currentSide = (direction === 'rtl') ? 'right' : 'left';
   for (let i = 0; i < pages.length; i++) {
     const p = pages[i];
     let spreadProp = null;
     let isCenter = false;
-
     if (p.spread === 'center') {
       spreadProp = 'page-spread-center';
       isCenter = true;
@@ -3100,12 +3009,8 @@ async function buildComicEpub(archiver, config, epubDir, type) {
         spreadProp = currentSide === 'left' ? 'page-spread-left' : 'page-spread-right';
       }
     }
-
-    if (isCenter) {
-      currentSide = (direction === 'rtl') ? 'right' : 'left';
-    } else {
-      currentSide = currentSide === 'left' ? 'right' : 'left';
-    }
+    if (isCenter) currentSide = (direction === 'rtl') ? 'right' : 'left';
+    else currentSide = currentSide === 'left' ? 'right' : 'left';
 
     let title = p.alt;
     if (!title) {
@@ -3113,9 +3018,7 @@ async function buildComicEpub(archiver, config, epubDir, type) {
       try {
         const content = fs.readFileSync(xhtmlPath, 'utf8');
         const m = content.match(/<title[^>]*>([^<]*)<\/title>/i);
-        if (m && m[1].trim() && m[1].trim().toLowerCase() !== 'page') {
-          title = m[1].trim();
-        }
+        if (m && m[1].trim() && m[1].trim().toLowerCase() !== 'page') title = m[1].trim();
       } catch (_) { /* ignore */ }
     }
     if (!title) title = `Page ${i + 1}`;
@@ -3134,10 +3037,23 @@ async function buildComicEpub(archiver, config, epubDir, type) {
   const epubFilename = `${rootName}.epub`;
   const epubPath = path.join(buildsDir, epubFilename);
 
-  let coverSize = null;
-  if (media.cover) {
-    coverSize = getImageSize(path.join(epubDir, 'images', media.cover));
+  if (OPTS.dryRun) {
+    logI18n('build_dry', {
+      file: epubPath,
+      chapters: chapters.length,
+      images: media.pages.length + media.illustrations.length,
+      audio: media.audio.length,
+    }, 'info');
+    emitJson({
+      ok: true, dryRun: true, path: epubPath,
+      pages: chapters.length, images: media.pages.length + media.illustrations.length,
+      audio: media.audio.length,
+    });
+    return;
   }
+
+  let coverSize = null;
+  if (media.cover) coverSize = getImageSize(path.join(epubDir, 'images', media.cover));
 
   const opfContent = generateOpf(
     {
@@ -3175,9 +3091,9 @@ async function buildComicEpub(archiver, config, epubDir, type) {
     output.on('close', () => {
       const size = (archive.pointer() / 1024).toFixed(1);
       logI18n('epub_built', { path: epubPath, size }, 'success');
+      emitJson({ ok: true, path: epubPath, sizeKB: parseFloat(size), pages: chapters.length });
       resolve();
     });
-
     archive.on('error', (err) => {
       logI18n('zip_error', { error: err.message }, 'error');
       reject(err);
@@ -3232,9 +3148,7 @@ async function buildComicEpub(archiver, config, epubDir, type) {
       if (excludeRoot.includes(item.toLowerCase())) continue;
       const src = path.join(epubDir, item);
       if (fs.statSync(src).isDirectory()) continue;
-      if (item.toLowerCase().endsWith('.xhtml')) {
-        archive.file(src, { name: `EPUB/${item}` });
-      }
+      if (item.toLowerCase().endsWith('.xhtml')) archive.file(src, { name: `EPUB/${item}` });
     }
 
     archive.finalize();
@@ -3251,7 +3165,7 @@ function buildChapterTitleMap(epubDir, chapters) {
   return map;
 }
 
-// ─── Debug ─────────────────────────────────────────────────────────────
+// ─── Debug ────────────────────────────────────────────────────────────
 async function cmdDebug(archiver, marked) {
   const cwd = process.cwd();
   const configPath = path.join(cwd, 'config.txt');
@@ -3262,28 +3176,20 @@ async function cmdDebug(archiver, marked) {
       type = (cfg.type || 'textbook').toLowerCase();
     } catch (_) { /* ignore */ }
   }
-
-  if (isComicType(type)) {
-    return await cmdDebugComic(archiver, type);
+  if (isTermux) {
+    logI18n('debug_termux_warning', {}, 'warn');
   }
+  if (isComicType(type)) return await cmdDebugComic(archiver, type);
   return await cmdDebugTextbook(archiver, marked);
 }
 
 async function cmdDebugTextbook(archiver, marked) {
   const markdownsDir = path.join(process.cwd(), 'Markdowns');
   const epubDir = path.join(process.cwd(), 'EPUB');
-
-  if (!fs.existsSync(markdownsDir)) {
-    logI18n('markdowns_not_found', {}, 'error');
-    return;
-  }
-  if (!fs.existsSync(epubDir)) {
-    logI18n('epub_dir_not_found', {}, 'error');
-    return;
-  }
+  if (!fs.existsSync(markdownsDir)) { logI18n('markdowns_not_found', {}, 'error'); return; }
+  if (!fs.existsSync(epubDir)) { logI18n('epub_dir_not_found', {}, 'error'); return; }
 
   logI18n('debug_start', {}, 'info');
-
   let debounceTimer = null;
   const settings = loadSettings();
   const debounceDelay = parseInt(settings.watch_delay) || 500;
@@ -3331,18 +3237,12 @@ async function cmdDebugTextbook(archiver, marked) {
 async function cmdDebugComic(archiver, type) {
   const epubDir = path.join(process.cwd(), 'EPUB');
   const pagesDir = path.join(epubDir, 'images', 'pages');
-
-  if (!fs.existsSync(pagesDir)) {
-    logI18n('comic_pages_dir_missing', {}, 'error');
-    return;
-  }
+  if (!fs.existsSync(pagesDir)) { logI18n('comic_pages_dir_missing', {}, 'error'); return; }
 
   logI18n('debug_start_comic', {}, 'info');
-
   let debounceTimer = null;
   const settings = loadSettings();
   const debounceDelay = parseInt(settings.watch_delay) || 500;
-
   const cfg = safeParseConfig();
   const fitMode = (cfg && cfg.fit_mode) ? cfg.fit_mode.toLowerCase() : 'contain';
   const cssRelPaths = collectCssFiles(epubDir, cfg);
@@ -3387,12 +3287,11 @@ async function cmdDebugComic(archiver, type) {
   });
 }
 
-// ─── Parsing config ────────────────────────────────────────────────────
+// ─── parseConfig ──────────────────────────────────────────────────────
 function parseConfig(configPath) {
   const content = fs.readFileSync(configPath, 'utf8');
   const lines = content.split('\n');
   const config = {};
-
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
@@ -3400,13 +3299,12 @@ function parseConfig(configPath) {
     if (idx === -1) continue;
     const key = trimmed.slice(0, idx).trim();
     let value = trimmed.slice(idx + 1).trim();
-    const commentIdx = value.indexOf('#');
-    if (commentIdx > 0 && !value.includes('"') && !value.includes("'")) {
-      value = value.slice(0, commentIdx).trim();
+    // Strip trailing comment only if preceded by space and not quoted
+    if (!value.includes('"') && !value.includes("'")) {
+      const commentMatch = value.match(/^(.*?)\s+#/);
+      if (commentMatch) value = commentMatch[1].trim();
     }
-    if (key && value) {
-      config[key] = value;
-    }
+    if (key && value) config[key] = value;
   }
 
   if (config.contributors) {
@@ -3419,17 +3317,11 @@ function parseConfig(configPath) {
     config.contributors = [];
   }
 
-  if (config.extra_titles) {
-    config.extra_titles = config.extra_titles.split(',').map(s => s.trim()).filter(Boolean);
-  } else {
-    config.extra_titles = [];
-  }
+  if (config.extra_titles) config.extra_titles = config.extra_titles.split(',').map(s => s.trim()).filter(Boolean);
+  else config.extra_titles = [];
 
-  if (config.subjects) {
-    config.subjects = config.subjects.split(',').map(s => s.trim()).filter(Boolean);
-  } else {
-    config.subjects = [];
-  }
+  if (config.subjects) config.subjects = config.subjects.split(',').map(s => s.trim()).filter(Boolean);
+  else config.subjects = [];
 
   config.type = (config.type || 'textbook').toLowerCase();
   if (!VALID_TYPES.includes(config.type)) config.type = 'textbook';
@@ -3437,7 +3329,7 @@ function parseConfig(configPath) {
   return config;
 }
 
-// ─── Chapter collection (textbook) ─────────────────────────────────────
+// ─── Chapter collection (textbook) ────────────────────────────────────
 function collectChapters(epubDir, ordPath) {
   const allFiles = fs.readdirSync(epubDir);
   const xhtmlFiles = allFiles.filter(f =>
@@ -3446,26 +3338,21 @@ function collectChapters(epubDir, ordPath) {
   );
 
   let order = [];
-
   if (fs.existsSync(ordPath)) {
     const content = fs.readFileSync(ordPath, 'utf8');
-    const lines = content.split('\n')
-      .map(line => line.trim())
-      .filter(line => line && !line.startsWith('#'));
-
+    const lines = content.split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#'));
     for (const line of lines) {
-      const found = xhtmlFiles.find(f => f === line);
-      if (found) {
-        order.push(found);
-      } else {
-        logI18n('warning_ord_not_found', { file: line }, 'warn');
+      if (!isSafeRelative(line)) {
+        logI18n('ord_unsafe_path', { file: line }, 'warn');
+        continue;
       }
+      const found = xhtmlFiles.find(f => f === line);
+      if (found) order.push(found);
+      else logI18n('warning_ord_not_found', { file: line }, 'warn');
     }
   }
 
-  if (order.length === 0) {
-    order = naturalSort(xhtmlFiles);
-  }
+  if (order.length === 0) order = naturalSort(xhtmlFiles);
 
   const chapters = [];
   for (const filename of order) {
@@ -3482,12 +3369,10 @@ function collectChapters(epubDir, ordPath) {
   return chapters;
 }
 
-// ─── Media collection (textbook) ───────────────────────────────────────
 function collectMedia(epubDir) {
   const imagesDir = path.join(epubDir, 'images');
   const audioDir = path.join(epubDir, 'audiovideo');
   const result = { images: [], audio: [], cover: null };
-
   if (fs.existsSync(imagesDir)) {
     const files = fs.readdirSync(imagesDir);
     for (const f of files) {
@@ -3500,83 +3385,58 @@ function collectMedia(epubDir) {
       }
     }
   }
-
   if (fs.existsSync(audioDir)) {
     const files = fs.readdirSync(audioDir);
     for (const f of files) {
       const full = path.join(audioDir, f);
       if (fs.statSync(full).isDirectory()) continue;
-      if (/\.(mp3|m4a|ogg|wav|mp4|webm)$/i.test(f)) {
-        result.audio.push(f);
-      }
+      if (/\.(mp3|m4a|ogg|wav|mp4|webm)$/i.test(f)) result.audio.push(f);
     }
   }
   return result;
 }
 
-// ─── Media collection (comic) ──────────────────────────────────────────
 function collectMediaComic(epubDir) {
   const imagesDir = path.join(epubDir, 'images');
   const pagesDir = path.join(imagesDir, 'pages');
   const audioDir = path.join(epubDir, 'audiovideo');
   const result = { cover: null, illustrations: [], pages: [], audio: [] };
-
   if (fs.existsSync(imagesDir)) {
     const items = fs.readdirSync(imagesDir, { withFileTypes: true });
     for (const item of items) {
       if (item.isDirectory()) continue;
       const f = item.name;
       if (!isImageFile(f)) continue;
-      if (/^cover\./i.test(f)) {
-        result.cover = f;
-      } else {
-        result.illustrations.push(f);
-      }
+      if (/^cover\./i.test(f)) result.cover = f;
+      else result.illustrations.push(f);
     }
   }
-
   if (fs.existsSync(pagesDir)) {
     const pages = walkFilesRecursive(pagesDir, isImageFile);
-    for (const p of pages) {
-      result.pages.push(path.relative(epubDir, p));
-    }
+    for (const p of pages) result.pages.push(path.relative(epubDir, p));
   }
-
   if (fs.existsSync(audioDir)) {
     const files = walkFilesRecursive(audioDir, (f) => /\.(mp3|m4a|ogg|wav|mp4|webm)$/i.test(f));
-    for (const f of files) {
-      result.audio.push(path.relative(audioDir, f));
-    }
+    for (const f of files) result.audio.push(path.relative(audioDir, f));
   }
-
   return result;
 }
 
-// ─── MIME type ─────────────────────────────────────────────────────────
+// ─── MIME ─────────────────────────────────────────────────────────────
 function getMimeType(filename) {
   const ext = path.extname(filename).toLowerCase();
   const map = {
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.gif': 'image/gif',
-    '.webp': 'image/webp',
-    '.svg': 'image/svg+xml',
-    '.mp3': 'audio/mpeg',
-    '.m4a': 'audio/mp4',
-    '.ogg': 'audio/ogg',
-    '.wav': 'audio/wav',
-    '.mp4': 'video/mp4',
-    '.webm': 'video/webm',
-    '.xhtml': 'application/xhtml+xml',
-    '.html': 'application/xhtml+xml',
-    '.xml': 'application/xml',
-    '.css': 'text/css',
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+    '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg',
+    '.wav': 'audio/wav', '.mp4': 'video/mp4', '.webm': 'video/webm',
+    '.xhtml': 'application/xhtml+xml', '.html': 'application/xhtml+xml',
+    '.xml': 'application/xml', '.css': 'text/css',
   };
   return map[ext] || 'application/octet-stream';
 }
 
-// ─── OPF generation ────────────────────────────────────────────────────
+// ─── OPF generation ───────────────────────────────────────────────────
 function generateOpf(config, chapters, media, options) {
   const { mainTitle, subTitle, volume, creator, language, identifier, date,
     publisher, description, subjects, seriesName, seriesNumber,
@@ -3592,34 +3452,24 @@ function generateOpf(config, chapters, media, options) {
   const titles = [mainTitle || 'Untitled'];
   if (subTitle) titles.push(subTitle);
   if (volume) titles.push(volume);
-  for (const tt of extraTitles) {
-    if (tt.trim()) titles.push(tt.trim());
-  }
-  for (const tt of titles) {
-    metadata.push(`<dc:title>${escapeXml(tt)}</dc:title>`);
-  }
+  for (const tt of extraTitles) if (tt.trim()) titles.push(tt.trim());
+  for (const tt of titles) metadata.push(`<dc:title>${escapeXml(tt)}</dc:title>`);
 
-  if (creator) {
-    metadata.push(`<dc:creator id="creator">${escapeXml(creator)}</dc:creator>`);
-  }
+  if (creator) metadata.push(`<dc:creator id="creator">${escapeXml(creator)}</dc:creator>`);
 
   for (const cc of contributors) {
     const role = cc.role || 'ctb';
-    if (role === 'aut' && !creator) {
-      metadata.push(`<dc:creator id="creator">${escapeXml(cc.name)}</dc:creator>`);
-    } else {
+    if (role === 'aut' && !creator) metadata.push(`<dc:creator id="creator">${escapeXml(cc.name)}</dc:creator>`);
+    else {
       const roleLabel = role === 'aut' ? 'author' : (role === 'edt' ? 'editor' : role);
       metadata.push(`<dc:contributor>${escapeXml(cc.name)} (${roleLabel})</dc:contributor>`);
     }
   }
 
-  for (const s of subjects) {
-    if (s.trim()) metadata.push(`<dc:subject>${escapeXml(s)}</dc:subject>`);
-  }
+  for (const s of subjects) if (s.trim()) metadata.push(`<dc:subject>${escapeXml(s)}</dc:subject>`);
 
   if (description) metadata.push(`<dc:description>${escapeXml(description)}</dc:description>`);
   if (publisher) metadata.push(`<dc:publisher>${escapeXml(publisher)}</dc:publisher>`);
-
   metadata.push(`<dc:language>${escapeXml(language || 'en')}</dc:language>`);
 
   let idVal = identifier;
@@ -3631,9 +3481,7 @@ function generateOpf(config, chapters, media, options) {
 
   if (seriesName) {
     metadata.push(`<meta property="belongs-to-collection" id="collection">${escapeXml(seriesName)}</meta>`);
-    if (seriesNumber) {
-      metadata.push(`<meta property="group-position" refines="#collection">${escapeXml(seriesNumber)}</meta>`);
-    }
+    if (seriesNumber) metadata.push(`<meta property="group-position" refines="#collection">${escapeXml(seriesNumber)}</meta>`);
   }
 
   metadata.push(`<meta property="dcterms:modified">${getEpubTimestamp()}</meta>`);
@@ -3669,11 +3517,8 @@ function generateOpf(config, chapters, media, options) {
   }
 
   manifest.push(`<item id="cover-xhtml" href="cover.xhtml" media-type="application/xhtml+xml"/>`);
-  if (isComic) {
-    spine.push(`<itemref idref="cover-xhtml" linear="yes" properties="page-spread-center"/>`);
-  } else {
-    spine.push(`<itemref idref="cover-xhtml" linear="yes"/>`);
-  }
+  if (isComic) spine.push(`<itemref idref="cover-xhtml" linear="yes" properties="page-spread-center"/>`);
+  else spine.push(`<itemref idref="cover-xhtml" linear="yes"/>`);
 
   manifest.push(`<item id="toc" href="toc.xhtml" media-type="application/xhtml+xml" properties="nav"/>`);
   spine.push(`<itemref idref="toc" linear="no"/>`);
@@ -3681,13 +3526,9 @@ function generateOpf(config, chapters, media, options) {
   for (let i = 0; i < chapters.length; i++) {
     const ch = chapters[i];
     const id = isComic ? `page_${i}` : `chap_${i}`;
-    const href = ch.path;
-    manifest.push(`<item id="${id}" href="${escapeXml(href)}" media-type="application/xhtml+xml"/>`);
-    if (isComic && ch.spread) {
-      spine.push(`<itemref idref="${id}" linear="yes" properties="${ch.spread}"/>`);
-    } else {
-      spine.push(`<itemref idref="${id}" linear="yes"/>`);
-    }
+    manifest.push(`<item id="${id}" href="${escapeXml(ch.path)}" media-type="application/xhtml+xml"/>`);
+    if (isComic && ch.spread) spine.push(`<itemref idref="${id}" linear="yes" properties="${ch.spread}"/>`);
+    else spine.push(`<itemref idref="${id}" linear="yes"/>`);
   }
 
   if (isComic) {
@@ -3702,16 +3543,14 @@ function generateOpf(config, chapters, media, options) {
   }
 
   for (let i = 0; i < cssRelPaths.length; i++) {
-    const cssRel = cssRelPaths[i];
-    manifest.push(`<item id="css_${i}" href="${escapeXml(cssRel)}" media-type="text/css"/>`);
+    manifest.push(`<item id="css_${i}" href="${escapeXml(cssRelPaths[i])}" media-type="text/css"/>`);
   }
 
   if (isComic) {
     for (let i = 0; i < media.illustrations.length; i++) {
       const img = media.illustrations[i];
       const id = `img_${i}_${String(img).replace(/[^a-zA-Z0-9]/g, '_')}`;
-      const href = `images/${img}`;
-      manifest.push(`<item id="${id}" href="${escapeXml(href)}" media-type="${getMimeType(img)}"/>`);
+      manifest.push(`<item id="${id}" href="images/${escapeXml(img)}" media-type="${getMimeType(img)}"/>`);
     }
     for (let i = 0; i < media.pages.length; i++) {
       const norm = epubPathToPosix(media.pages[i]);
@@ -3723,16 +3562,14 @@ function generateOpf(config, chapters, media, options) {
       const img = media.images[i];
       if (img === media.cover) continue;
       const id = `img_${i}_${img.replace(/[^a-zA-Z0-9]/g, '_')}`;
-      const href = `images/${img}`;
-      manifest.push(`<item id="${id}" href="${escapeXml(href)}" media-type="${getMimeType(img)}"/>`);
+      manifest.push(`<item id="${id}" href="images/${escapeXml(img)}" media-type="${getMimeType(img)}"/>`);
     }
   }
 
   for (let i = 0; i < media.audio.length; i++) {
     const av = media.audio[i];
     const id = `av_${i}_${String(av).replace(/[^a-zA-Z0-9]/g, '_')}`;
-    const href = `audiovideo/${av}`;
-    manifest.push(`<item id="${id}" href="${escapeXml(href)}" media-type="${getMimeType(av)}"/>`);
+    manifest.push(`<item id="${id}" href="audiovideo/${escapeXml(av)}" media-type="${getMimeType(av)}"/>`);
   }
 
   const opf = `<?xml version="1.0" encoding="UTF-8"?>
@@ -3753,7 +3590,6 @@ function generateOpf(config, chapters, media, options) {
   return opf;
 }
 
-// ─── TOC generation ────────────────────────────────────────────────────
 function generateToc(chapters, options = {}) {
   const comic = options.comic === true;
 
@@ -3761,7 +3597,6 @@ function generateToc(chapters, options = {}) {
     const items = chapters.map(ch =>
       `<li><a href="${escapeXml(ch.path)}">${escapeXml(ch.title)}</a></li>`
     ).join('\n    ');
-
     return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml"
@@ -3785,7 +3620,6 @@ function generateToc(chapters, options = {}) {
   const chapterMap = options.chapterTitles || {};
   const grouped = new Map();
   let hasChapters = false;
-
   for (const ch of chapters) {
     const key = ch.chapter || '__flat__';
     if (!grouped.has(key)) grouped.set(key, []);
@@ -3794,7 +3628,6 @@ function generateToc(chapters, options = {}) {
   }
 
   let items = '';
-
   if (hasChapters) {
     const orderedKeys = [];
     const seen = new Set();
@@ -3802,15 +3635,12 @@ function generateToc(chapters, options = {}) {
       const k = ch.chapter || '__flat__';
       if (!seen.has(k)) { seen.add(k); orderedKeys.push(k); }
     }
-
     const outer = [];
     for (const key of orderedKeys) {
       const pages = grouped.get(key);
       if (!pages) continue;
       if (key === '__flat__') {
-        for (const p of pages) {
-          outer.push(`<li><a href="${escapeXml(p.path)}">${escapeXml(p.title)}</a></li>`);
-        }
+        for (const p of pages) outer.push(`<li><a href="${escapeXml(p.path)}">${escapeXml(p.title)}</a></li>`);
       } else {
         const chapTitle = chapterMap[key] || chapterTitleFromFolder(key);
         const firstPath = pages[0].path;
@@ -3849,7 +3679,6 @@ function generateToc(chapters, options = {}) {
 `;
 }
 
-// ─── Cover XHTML generation ────────────────────────────────────────────
 function generateCoverXhtml(coverFilename, coverSize, options = {}) {
   const comic = options.comic === true;
   const cssRelPaths = options.cssRelPaths || [];
@@ -3858,7 +3687,7 @@ function generateCoverXhtml(coverFilename, coverSize, options = {}) {
   if (!coverFilename) {
     return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="id" lang="id">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
 <head>
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
   <title>Cover</title>
@@ -3899,7 +3728,7 @@ function generateCoverXhtml(coverFilename, coverSize, options = {}) {
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:xlink="http://www.w3.org/1999/xlink" xml:lang="id" lang="id">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:xlink="http://www.w3.org/1999/xlink" xml:lang="en" lang="en">
 <head>
   <title>Cover</title>
   <meta name="viewport" content="width=device-width, height=device-height" />
@@ -3923,42 +3752,25 @@ function generateContainer() {
 `;
 }
 
-// ─── Command: import ───────────────────────────────────────────────────
+// ─── Import ───────────────────────────────────────────────────────────
 async function cmdImport(argv) {
   let force = false;
   let outputDir = process.cwd();
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--force' || arg === '-f') force = true;
-    else if (arg === '--output' && i + 1 < argv.length) {
-      outputDir = path.resolve(process.cwd(), argv[i + 1]);
-      i++;
-    }
+    else if (arg === '--output' && i + 1 < argv.length) { outputDir = path.resolve(process.cwd(), argv[i + 1]); i++; }
   }
 
   let AdmZip, xml2js;
-  try {
-    AdmZip = require('adm-zip');
-  } catch (_) {
-    logI18n('missing_dep', { mod: 'adm-zip', version: '0.5.10' }, 'error');
-    closeRL();
-    return;
-  }
-  try {
-    xml2js = require('xml2js');
-  } catch (_) {
-    logI18n('missing_dep', { mod: 'xml2js', version: '0.5.0' }, 'error');
-    closeRL();
-    return;
-  }
+  try { AdmZip = require('adm-zip'); }
+  catch (_) { logI18n('missing_dep', { mod: 'adm-zip', version: '0.5.10' }, 'error'); closeRL(); return; }
+  try { xml2js = require('xml2js'); }
+  catch (_) { logI18n('missing_dep', { mod: 'xml2js', version: '0.5.0' }, 'error'); closeRL(); return; }
 
   const cwd = process.cwd();
   const files = fs.readdirSync(cwd).filter(f => f.endsWith('.epub'));
-  if (files.length === 0) {
-    logI18n('import_no_epub', {}, 'error');
-    closeRL();
-    return;
-  }
+  if (files.length === 0) { logI18n('import_no_epub', {}, 'error'); closeRL(); return; }
 
   let selectedFile = files[0];
   if (files.length > 1) {
@@ -3981,11 +3793,7 @@ async function cmdImport(argv) {
   const zipEntries = zip.getEntries();
 
   const containerEntry = zipEntries.find(e => e.entryName === 'META-INF/container.xml');
-  if (!containerEntry) {
-    console.error('META-INF/container.xml tidak ditemukan dalam EPUB.');
-    closeRL();
-    return;
-  }
+  if (!containerEntry) { console.error('META-INF/container.xml not found in EPUB.'); closeRL(); return; }
   const containerXml = containerEntry.getData().toString('utf8');
   const parser = new xml2js.Parser();
   let opfPath;
@@ -3994,27 +3802,14 @@ async function cmdImport(argv) {
     const rootfile = parsed.container?.rootfiles?.[0]?.rootfile?.[0]?.$?.['full-path'];
     if (rootfile) opfPath = rootfile;
   } catch (_) {}
-  if (!opfPath) {
-    console.error('Gagal membaca path OPF dari container.xml.');
-    closeRL();
-    return;
-  }
+  if (!opfPath) { console.error('Failed to read OPF path from container.xml.'); closeRL(); return; }
 
   const opfEntry = zipEntries.find(e => e.entryName === opfPath);
-  if (!opfEntry) {
-    console.error(`OPF tidak ditemukan: ${opfPath}`);
-    closeRL();
-    return;
-  }
+  if (!opfEntry) { console.error(`OPF not found: ${opfPath}`); closeRL(); return; }
   const opfXml = opfEntry.getData().toString('utf8');
   let opfParsed;
-  try {
-    opfParsed = await parser.parseStringPromise(opfXml);
-  } catch (_) {
-    console.error('Gagal parsing OPF.');
-    closeRL();
-    return;
-  }
+  try { opfParsed = await parser.parseStringPromise(opfXml); }
+  catch (_) { console.error('Failed to parse OPF.'); closeRL(); return; }
 
   const opfDir = path.posix.dirname(opfPath);
   const metadata = opfParsed.package?.metadata?.[0] || {};
@@ -4040,10 +3835,7 @@ async function cmdImport(argv) {
   const description = metadata['dc:description']?.[0]?._ || metadata['dc:description']?.[0] || '';
   const subjects = (metadata['dc:subject'] || []).map(s => s._ || s).filter(Boolean);
 
-  let seriesName = '';
-  let seriesNumber = '';
-  let renditionLayout = '';
-  let renditionSpread = '';
+  let seriesName = '', seriesNumber = '', renditionLayout = '', renditionSpread = '';
   const metaTags = metadata['meta'] || [];
   for (const m of metaTags) {
     const prop = m.$?.property;
@@ -4061,9 +3853,7 @@ async function cmdImport(argv) {
     const href = item.$?.href;
     const mediaType = item.$?.['media-type'];
     const properties = item.$?.properties || '';
-    if (id && href) {
-      manifestMap[id] = { href, mediaType, properties };
-    }
+    if (id && href) manifestMap[id] = { href, mediaType, properties };
   }
 
   const spineEl = opfParsed.package?.spine?.[0];
@@ -4080,18 +3870,28 @@ async function cmdImport(argv) {
   ensureDir(imagesTarget);
   ensureDir(audioTarget);
 
+  // SAFE resolveHref with zip-slip protection
   function resolveHref(href) {
+    if (!href || typeof href !== 'string') throw new Error('Empty href');
+    if (href.includes('\0')) throw new Error(`Unsafe path in EPUB: ${href}`);
     const joined = path.posix.normalize(path.posix.join(opfDir, href));
+    if (joined.startsWith('..') || path.posix.isAbsolute(joined) || /^[a-zA-Z]:/.test(joined)) {
+      throw new Error(`Unsafe path in EPUB: ${href}`);
+    }
     return joined;
   }
 
   function findZipEntryByHref(href) {
-    const epubInternal = resolveHref(href);
+    let epubInternal;
+    try { epubInternal = resolveHref(href); }
+    catch (err) {
+      logI18n('import_unsafe_path', { path: href }, 'warn');
+      return null;
+    }
     return zipEntries.find(e => e.entryName === epubInternal);
   }
 
-  let coverFound = false;
-  let coverExt = null;
+  let coverFound = false, coverExt = null;
   for (const id in manifestMap) {
     const item = manifestMap[id];
     if (item.properties && item.properties.includes('cover-image')) {
@@ -4099,11 +3899,10 @@ async function cmdImport(argv) {
       if (entry) {
         const ext = path.extname(entry.entryName).toLowerCase() || '.jpg';
         const dest = path.join(imagesTarget, `cover${ext}`);
-        if (fs.existsSync(dest) && !force) {
-          logI18n('not_modified', { file: dest }, 'warn');
-        } else {
+        if (fs.existsSync(dest) && !force) logI18n('not_modified', { file: dest }, 'warn');
+        else {
           ensureDir(path.dirname(dest));
-          fs.writeFileSync(dest, entry.getData());
+          if (!OPTS.dryRun) fs.writeFileSync(dest, entry.getData());
           logI18n('import_cover_found', { file: `cover${ext}` }, 'info');
         }
         coverFound = true;
@@ -4122,10 +3921,9 @@ async function cmdImport(argv) {
           if (entry) {
             const ext = path.extname(entry.entryName).toLowerCase() || '.jpg';
             const dest = path.join(imagesTarget, `cover${ext}`);
-            if (fs.existsSync(dest) && !force) {
-              logI18n('not_modified', { file: dest }, 'warn');
-            } else {
-              fs.writeFileSync(dest, entry.getData());
+            if (fs.existsSync(dest) && !force) logI18n('not_modified', { file: dest }, 'warn');
+            else {
+              if (!OPTS.dryRun) fs.writeFileSync(dest, entry.getData());
               logI18n('import_cover_found', { file: `cover${ext}` }, 'info');
             }
             coverFound = true;
@@ -4150,9 +3948,7 @@ async function cmdImport(argv) {
     const coverHref = (() => {
       for (const id in manifestMap) {
         const item = manifestMap[id];
-        if (item.properties && item.properties.includes('cover-image')) {
-          return item.href;
-        }
+        if (item.properties && item.properties.includes('cover-image')) return item.href;
       }
       return null;
     })();
@@ -4160,7 +3956,6 @@ async function cmdImport(argv) {
     for (const idref of spineOrder) {
       const item = manifestMap[idref];
       if (!item) continue;
-
       const baseNameLower = path.basename(item.href).toLowerCase();
       if (['nav.xhtml', 'toc.xhtml', 'cover.xhtml', 'titlepage.xhtml'].includes(baseNameLower)) continue;
       if (item.href === coverHref) continue;
@@ -4170,7 +3965,7 @@ async function cmdImport(argv) {
         if (entry) {
           const dest = path.join(epubTarget, path.basename(item.href));
           if (!fs.existsSync(dest) || force) {
-            fs.writeFileSync(dest, entry.getData());
+            if (!OPTS.dryRun) fs.writeFileSync(dest, entry.getData());
             logI18n('created', { file: dest }, 'success');
           }
         }
@@ -4180,14 +3975,13 @@ async function cmdImport(argv) {
       const entry = findZipEntryByHref(item.href);
       if (!entry) continue;
       const xhtmlContent = entry.getData().toString('utf8');
-
       if (/<nav\b[^>]*epub:type=["']toc["']/i.test(xhtmlContent)) continue;
 
       const imgMatch = xhtmlContent.match(/<img[^>]+src=["']([^"']+)["']/i);
       if (!imgMatch) {
         const dest = path.join(epubTarget, path.basename(item.href));
         if (!fs.existsSync(dest) || force) {
-          fs.writeFileSync(dest, entry.getData());
+          if (!OPTS.dryRun) fs.writeFileSync(dest, entry.getData());
           logI18n('created', { file: dest }, 'success');
         }
         continue;
@@ -4197,8 +3991,18 @@ async function cmdImport(argv) {
       const altMatch = xhtmlContent.match(/<img[^>]+alt=["']([^"']*)["']/i);
       const alt = altMatch ? altMatch[1] : '';
 
-      const xhtmlDir = path.posix.dirname(resolveHref(item.href));
-      const resolvedImg = path.posix.normalize(path.posix.join(xhtmlDir, imgHref));
+      let resolvedImg;
+      try {
+        const xhtmlDir = path.posix.dirname(resolveHref(item.href));
+        resolvedImg = path.posix.normalize(path.posix.join(xhtmlDir, imgHref));
+        if (resolvedImg.startsWith('..') || path.posix.isAbsolute(resolvedImg)) {
+          logI18n('import_unsafe_path', { path: imgHref }, 'warn');
+          continue;
+        }
+      } catch (err) {
+        logI18n('import_unsafe_path', { path: item.href }, 'warn');
+        continue;
+      }
       const imgEntry = zipEntries.find(e => e.entryName === resolvedImg);
       if (!imgEntry) {
         logI18n('import_skip_non_spine', { file: item.href }, 'warn');
@@ -4212,19 +4016,13 @@ async function cmdImport(argv) {
       const imgDest = path.join(pagesTarget, newImgName);
 
       if (!fs.existsSync(imgDest) || force) {
-        fs.writeFileSync(imgDest, imgEntry.getData());
+        if (!OPTS.dryRun) fs.writeFileSync(imgDest, imgEntry.getData());
         imageFiles.push(newImgName);
       }
-
-      ordComicEntries.push({
-        path: `${newBase}.xhtml`,
-        alt: alt || null,
-        spread: null,
-      });
+      ordComicEntries.push({ path: `${newBase}.xhtml`, alt: alt || null, spread: null });
     }
 
     logI18n('import_comic_pages', { count: pageCounter }, 'info');
-
     await syncXhtmlFromImages(epubTarget, { silent: true, force: false });
 
     for (const id in manifestMap) {
@@ -4236,7 +4034,7 @@ async function cmdImport(argv) {
           const filename = path.basename(item.href);
           const dest = path.join(audioTarget, filename);
           if (!fs.existsSync(dest) || force) {
-            fs.writeFileSync(dest, entry.getData());
+            if (!OPTS.dryRun) fs.writeFileSync(dest, entry.getData());
             audioFiles.push(filename);
             logI18n('created', { file: dest }, 'success');
           }
@@ -4251,31 +4049,30 @@ async function cmdImport(argv) {
       subjects, seriesName, seriesNumber, contributors, extraTitles,
       type, direction: pageProgression, spread: renditionSpread || 'auto',
     });
-    if (fs.existsSync(configPath) && !force) {
-      const ans = await question(t('file_exists', { file: 'config.txt' }));
-      if ((ans || '').toLowerCase() === 'y') {
-        fs.writeFileSync(configPath, configContent, 'utf8');
-        logI18n('overwritten', { file: 'config.txt' }, 'success');
-      } else {
-        logI18n('not_modified', { file: 'config.txt' }, 'warn');
-      }
-    } else {
-      fs.writeFileSync(configPath, configContent, 'utf8');
-      logI18n('created', { file: configPath }, 'success');
-    }
 
-    const ordPath = path.join(outputDir, 'ord.txt');
-    if (fs.existsSync(ordPath) && !force) {
-      const ans = await question(t('file_exists', { file: 'ord.txt' }));
-      if ((ans || '').toLowerCase() === 'y') {
-        writeOrdFile(ordPath, ordComicEntries, true);
-        logI18n('overwritten', { file: 'ord.txt' }, 'success');
+    if (!OPTS.dryRun) {
+      if (fs.existsSync(configPath) && !force) {
+        const ans = await question(t('file_exists', { file: 'config.txt' }));
+        if ((ans || '').toLowerCase() === 'y') {
+          fs.writeFileSync(configPath, configContent, 'utf8');
+          logI18n('overwritten', { file: 'config.txt' }, 'success');
+        } else logI18n('not_modified', { file: 'config.txt' }, 'warn');
       } else {
-        logI18n('not_modified', { file: 'ord.txt' }, 'warn');
+        fs.writeFileSync(configPath, configContent, 'utf8');
+        logI18n('created', { file: configPath }, 'success');
       }
-    } else {
-      writeOrdFile(ordPath, ordComicEntries, true);
-      logI18n('import_ord_written', { count: ordComicEntries.length }, 'success');
+
+      const ordPath = path.join(outputDir, 'ord.txt');
+      if (fs.existsSync(ordPath) && !force) {
+        const ans = await question(t('file_exists', { file: 'ord.txt' }));
+        if ((ans || '').toLowerCase() === 'y') {
+          writeOrdFile(ordPath, ordComicEntries, true);
+          logI18n('overwritten', { file: 'ord.txt' }, 'success');
+        } else logI18n('not_modified', { file: 'ord.txt' }, 'warn');
+      } else {
+        writeOrdFile(ordPath, ordComicEntries, true);
+        logI18n('import_ord_written', { count: ordComicEntries.length }, 'success');
+      }
     }
 
     logI18n('import_done', {}, 'success');
@@ -4284,17 +4081,17 @@ async function cmdImport(argv) {
       images: imageFiles.length + (coverFound ? 1 : 0),
       audio: audioFiles.length,
     }, 'info');
-
     closeRL();
     return;
   }
 
+  // Textbook import
   function copyZipEntry(entryName, destPath, overwrite = false) {
     const entry = zipEntries.find(e => e.entryName === entryName);
     if (!entry) return false;
     if (fs.existsSync(destPath) && !overwrite) return false;
     ensureDir(path.dirname(destPath));
-    fs.writeFileSync(destPath, entry.getData());
+    if (!OPTS.dryRun) fs.writeFileSync(destPath, entry.getData());
     return true;
   }
 
@@ -4304,19 +4101,19 @@ async function cmdImport(argv) {
     if (item.mediaType === 'application/xhtml+xml' ||
         item.mediaType === 'application/xhtml+xml;charset=utf-8' ||
         item.mediaType === 'application/xhtml+xml; charset=utf-8') {
-      const epubInternal = resolveHref(item.href);
+      let epubInternal;
+      try { epubInternal = resolveHref(item.href); }
+      catch (err) { logI18n('import_unsafe_path', { path: item.href }, 'warn'); continue; }
       const destRel = path.posix.relative(opfDir, epubInternal) || item.href;
+      if (!isSafeRelative(destRel)) {
+        logI18n('import_unsafe_path', { path: destRel }, 'warn');
+        continue;
+      }
       const dest = path.join(epubTarget, destRel);
       if (copyZipEntry(epubInternal, dest, force)) {
         chapterFiles.push(destRel);
         logI18n('created', { file: dest }, 'success');
-      } else if (fs.existsSync(dest)) {
-        logI18n('not_modified', { file: dest }, 'warn');
-      }
-    } else if (item.mediaType && !item.mediaType.startsWith('application/xhtml+xml')) {
-      // ignore
-    } else {
-      logI18n('import_skip_non_spine', { file: item.href }, 'warn');
+      } else if (fs.existsSync(dest)) logI18n('not_modified', { file: dest }, 'warn');
     }
   }
 
@@ -4326,7 +4123,9 @@ async function cmdImport(argv) {
     if (item.mediaType.startsWith('image/')) {
       const filename = path.basename(item.href);
       if (coverFound && /cover/i.test(filename)) continue;
-      const epubInternal = resolveHref(item.href);
+      let epubInternal;
+      try { epubInternal = resolveHref(item.href); }
+      catch (err) { logI18n('import_unsafe_path', { path: item.href }, 'warn'); continue; }
       const dest = path.join(imagesTarget, filename);
       if (copyZipEntry(epubInternal, dest, force)) {
         imageFiles.push(filename);
@@ -4334,7 +4133,9 @@ async function cmdImport(argv) {
       }
     } else if (item.mediaType.startsWith('audio/') || item.mediaType.startsWith('video/')) {
       const filename = path.basename(item.href);
-      const epubInternal = resolveHref(item.href);
+      let epubInternal;
+      try { epubInternal = resolveHref(item.href); }
+      catch (err) { logI18n('import_unsafe_path', { path: item.href }, 'warn'); continue; }
       const dest = path.join(audioTarget, filename);
       if (copyZipEntry(epubInternal, dest, force)) {
         audioFiles.push(filename);
@@ -4343,38 +4144,36 @@ async function cmdImport(argv) {
     }
   }
 
-  const configPath = path.join(outputDir, 'config.txt');
-  const configContent = buildImportTextbookConfig({
-    mainTitle, author, lang, identifier, date, publisher, description,
-    subjects, seriesName, seriesNumber, contributors, extraTitles,
-  });
-  if (fs.existsSync(configPath) && !force) {
-    const ans = await question(t('file_exists', { file: 'config.txt' }));
-    if ((ans || '').toLowerCase() === 'y') {
+  if (!OPTS.dryRun) {
+    const configPath = path.join(outputDir, 'config.txt');
+    const configContent = buildImportTextbookConfig({
+      mainTitle, author, lang, identifier, date, publisher, description,
+      subjects, seriesName, seriesNumber, contributors, extraTitles,
+    });
+    if (fs.existsSync(configPath) && !force) {
+      const ans = await question(t('file_exists', { file: 'config.txt' }));
+      if ((ans || '').toLowerCase() === 'y') {
+        fs.writeFileSync(configPath, configContent, 'utf8');
+        logI18n('overwritten', { file: 'config.txt' }, 'success');
+      } else logI18n('not_modified', { file: 'config.txt' }, 'warn');
+    } else {
       fs.writeFileSync(configPath, configContent, 'utf8');
-      logI18n('overwritten', { file: 'config.txt' }, 'success');
-    } else {
-      logI18n('not_modified', { file: 'config.txt' }, 'warn');
+      logI18n('created', { file: configPath }, 'success');
     }
-  } else {
-    fs.writeFileSync(configPath, configContent, 'utf8');
-    logI18n('created', { file: configPath }, 'success');
-  }
 
-  const ordPath = path.join(outputDir, 'ord.txt');
-  let ordContent = '# Daftar urutan bab (satu baris satu .xhtml)\n';
-  ordContent += chapterFiles.join('\n');
-  if (fs.existsSync(ordPath) && !force) {
-    const ans = await question(t('file_exists', { file: 'ord.txt' }));
-    if ((ans || '').toLowerCase() === 'y') {
-      fs.writeFileSync(ordPath, ordContent, 'utf8');
-      logI18n('overwritten', { file: 'ord.txt' }, 'success');
+    const ordPath = path.join(outputDir, 'ord.txt');
+    let ordContent = '# Chapter order list (one .xhtml per line)\n';
+    ordContent += chapterFiles.join('\n');
+    if (fs.existsSync(ordPath) && !force) {
+      const ans = await question(t('file_exists', { file: 'ord.txt' }));
+      if ((ans || '').toLowerCase() === 'y') {
+        fs.writeFileSync(ordPath, ordContent, 'utf8');
+        logI18n('overwritten', { file: 'ord.txt' }, 'success');
+      } else logI18n('not_modified', { file: 'ord.txt' }, 'warn');
     } else {
-      logI18n('not_modified', { file: 'ord.txt' }, 'warn');
+      fs.writeFileSync(ordPath, ordContent, 'utf8');
+      logI18n('created', { file: ordPath }, 'success');
     }
-  } else {
-    fs.writeFileSync(ordPath, ordContent, 'utf8');
-    logI18n('created', { file: ordPath }, 'success');
   }
 
   logI18n('import_done', {}, 'success');
@@ -4384,13 +4183,13 @@ async function cmdImport(argv) {
     audio: audioFiles.length,
   }, 'info');
   logI18n('import_hint', {}, 'info');
-
+  emitJson({ ok: true, chapters: chapterFiles.length, images: imageFiles.length, audio: audioFiles.length });
   closeRL();
 }
 
 function buildImportTextbookConfig(d) {
   return `# ============================================================
-#  METADATA BUKU  -  diedit dari hasil impor
+#  BOOK METADATA - imported
 # ============================================================
 
 type: textbook
@@ -4411,7 +4210,7 @@ contributors: ${d.contributors.map(cc => `${cc.name}|${cc.role}`).join(', ')}
 extra_titles: ${d.extraTitles.join(', ')}
 
 # ============================================================
-#  KONVERSI DOCX -> MARKDOWN (opsional)
+#  DOCX -> MARKDOWN CONVERSION (optional)
 # ============================================================
 # [docx-mapping]
 # heading1 = 24
@@ -4422,7 +4221,7 @@ extra_titles: ${d.extraTitles.join(', ')}
 
 function buildImportComicConfig(d) {
   return `# ============================================================
-#  METADATA BUKU  -  diedit dari hasil impor
+#  BOOK METADATA - imported
 # ============================================================
 
 type: ${d.type}
@@ -4447,29 +4246,24 @@ contributors: ${d.contributors.map(cc => `${cc.name}|${cc.role}`).join(', ')}
 extra_titles: ${d.extraTitles.join(', ')}
 
 # ============================================================
-#  CATATAN:
-#  Halaman diekstrak ke EPUB/images/pages/ (flat, tanpa chapter)
-#  XHTML di-generate ke EPUB/xhtmls/
-#  ord.txt sudah terisi sesuai urutan spine EPUB asli
-#  nav/toc dari EPUB asli otomatis di-skip
+#  NOTES:
+#  Pages extracted to EPUB/images/pages/ (flat, no chapters)
+#  XHTML generated to EPUB/xhtmls/
+#  ord.txt populated according to original EPUB spine order
+#  nav/toc from original EPUB is skipped automatically
 # ============================================================
 `;
 }
 
-// ─── Command: update module / config ───────────────────────────────────
-// Fungsi inti tanpa prompt & tanpa closeRL — bisa dipanggil dari mana saja.
+// ─── update module / config ───────────────────────────────────────────
 async function doUpdateModule(force = false) {
   const nodeModulesDir = path.join(process.cwd(), 'node_modules');
   if (fs.existsSync(nodeModulesDir) && !force) {
     const ans = await question(t('update_confirm'));
-    if ((ans || '').toLowerCase() !== 'y') {
-      logI18n('cancelled', {}, 'warn');
-      return false;
-    }
+    if ((ans || '').toLowerCase() !== 'y') { logI18n('cancelled', {}, 'warn'); return false; }
   } else if (fs.existsSync(nodeModulesDir) && force) {
     logI18n('update_force', {}, 'info');
   }
-
   try {
     const url = 'https://github.com/YogabyAllwaysever/epubcreator.js/archive/refs/heads/modules.tar.gz';
     await downloadAndExtract(url, process.cwd(), 'node_modules', 1);
@@ -4485,14 +4279,10 @@ async function doUpdateConfig(force = false) {
   const configDir = path.join(process.cwd(), TOOL_DIR);
   if (fs.existsSync(configDir) && !force) {
     const ans = await question(t('updateconfig_confirm'));
-    if ((ans || '').toLowerCase() !== 'y') {
-      logI18n('cancelled', {}, 'warn');
-      return false;
-    }
+    if ((ans || '').toLowerCase() !== 'y') { logI18n('cancelled', {}, 'warn'); return false; }
   } else if (fs.existsSync(configDir) && force) {
     logI18n('updateconfig_force', {}, 'info');
   }
-
   try {
     const url = 'https://github.com/YogabyAllwaysever/epubcreator.js/archive/refs/heads/config.tar.gz';
     await downloadAndExtract(url, process.cwd(), '.epubcreator', 1);
@@ -4514,11 +4304,10 @@ async function cmdUpdateConfig(force = false) {
   closeRL();
 }
 
-// ─── Command: settings ─────────────────────────────────────────────────
+// ─── settings ─────────────────────────────────────────────────────────
 async function cmdSettings() {
   const settingsPath = path.join(process.cwd(), SETTINGS_FILE);
   const settings = loadSettings();
-
   console.log(t('settings_title'));
   const keys = ['watch_delay', 'auto_build', 'overwrite_policy', 'default_type'];
   const current = {};
@@ -4532,88 +4321,717 @@ async function cmdSettings() {
   for (const k of keys) {
     const prompt = `[${k}] (${current[k]}): `;
     const answer = await question(prompt);
-    if ((answer || '').trim().toLowerCase() === 'save') {
-      for (const kk of keys) {
-        if (newSettings[kk] === undefined) {
-          newSettings[kk] = current[kk];
-        }
-      }
+    const trimmed = (answer || '').trim();
+    if (trimmed.toLowerCase() === 'save') {
+      for (const kk of keys) if (newSettings[kk] === undefined) newSettings[kk] = current[kk];
       break;
     }
-    if ((answer || '').trim().toLowerCase() === 'cancel') {
-      logI18n('settings_cancelled', {}, 'warn');
-      closeRL();
-      return;
-    }
-    if ((answer || '').trim() !== '') {
-      if (k === 'watch_delay' && isNaN(parseInt(answer.trim()))) {
-        logI18n('settings_invalid_value', {}, 'warn');
-        newSettings[k] = current[k];
-      } else if (k === 'auto_build' && !['true', 'false'].includes(answer.trim().toLowerCase())) {
-        logI18n('settings_invalid_value', {}, 'warn');
-        newSettings[k] = current[k];
-      } else if (k === 'overwrite_policy' && !['ask', 'force', 'skip'].includes(answer.trim().toLowerCase())) {
-        logI18n('settings_invalid_value', {}, 'warn');
-        newSettings[k] = current[k];
-      } else if (k === 'default_type' && !VALID_TYPES.includes(answer.trim().toLowerCase())) {
-        logI18n('settings_invalid_value', {}, 'warn');
-        newSettings[k] = current[k];
-      } else {
-        newSettings[k] = answer.trim();
-      }
-    } else {
-      newSettings[k] = current[k];
-    }
+    if (trimmed.toLowerCase() === 'cancel') { logI18n('settings_cancelled', {}, 'warn'); closeRL(); return; }
+    if (trimmed !== '') {
+      if (k === 'watch_delay' && isNaN(parseInt(trimmed))) {
+        logI18n('settings_invalid_value', {}, 'warn'); newSettings[k] = current[k];
+      } else if (k === 'auto_build' && !['true', 'false'].includes(trimmed.toLowerCase())) {
+        logI18n('settings_invalid_value', {}, 'warn'); newSettings[k] = current[k];
+      } else if (k === 'overwrite_policy' && !['ask', 'force', 'skip'].includes(trimmed.toLowerCase())) {
+        logI18n('settings_invalid_value', {}, 'warn'); newSettings[k] = current[k];
+      } else if (k === 'default_type' && !VALID_TYPES.includes(trimmed.toLowerCase())) {
+        logI18n('settings_invalid_value', {}, 'warn'); newSettings[k] = current[k];
+      } else newSettings[k] = trimmed;
+    } else newSettings[k] = current[k];
   }
 
   const content = Object.entries(newSettings).map(([k, v]) => `${k} = ${v}`).join('\n');
   ensureDir(TOOL_DIR);
   fs.writeFileSync(settingsPath, content, 'utf8');
   logI18n('settings_saved', { file: settingsPath }, 'success');
-
   closeRL();
 }
 
-// ─── Command: validate ─────────────────────────────────────────────────
+// ─── validate ─────────────────────────────────────────────────────────
+function findEpubcheck() {
+  // 1. Check PATH
+  try {
+    execSync('epubcheck --version', { stdio: 'ignore' });
+    return { command: 'epubcheck', args: [] };
+  } catch (_) {}
+
+  // 2. Check .epubcreator/tools/epubcheck/
+  const toolDir = path.join(process.cwd(), TOOL_DIR, 'tools', 'epubcheck');
+  const jarPath = path.join(toolDir, 'epubcheck.jar');
+  if (fs.existsSync(jarPath)) {
+    try {
+      execSync('java -version', { stdio: 'ignore' });
+      return { command: 'java', args: ['-jar', jarPath] };
+    } catch (_) {
+      return { error: 'java_missing' };
+    }
+  }
+
+  return { error: 'not_found' };
+}
+
 async function cmdValidate() {
   const buildsDir = path.join(process.cwd(), 'builds');
-  if (!fs.existsSync(buildsDir)) {
-    logI18n('validate_no_epub', {}, 'error');
-    closeRL();
-    return;
-  }
+  if (!fs.existsSync(buildsDir)) { logI18n('validate_no_epub', {}, 'error'); closeRL(); return; }
   const files = fs.readdirSync(buildsDir).filter(f => f.endsWith('.epub'));
-  if (files.length === 0) {
-    logI18n('validate_no_epub', {}, 'error');
-    closeRL();
-    return;
-  }
+  if (files.length === 0) { logI18n('validate_no_epub', {}, 'error'); closeRL(); return; }
   const latest = files.sort().pop();
   const epubPath = path.join(buildsDir, latest);
   logI18n('validate_start', { file: latest }, 'info');
 
-  let output;
+  const checker = findEpubcheck();
+  if (checker.error === 'not_found') {
+    logI18n('validate_epubcheck_missing', {}, 'error');
+    emitJson({ ok: false, error: 'epubcheck_missing' });
+    closeRL();
+    return;
+  }
+  if (checker.error === 'java_missing') {
+    logI18n('validate_java_missing', {}, 'error');
+    emitJson({ ok: false, error: 'java_missing' });
+    closeRL();
+    return;
+  }
+
   try {
-    output = execSync(`epubcheck "${epubPath}"`, { encoding: 'utf8' });
+    const cmd = `${checker.command} ${checker.args.join(' ')} "${epubPath}"`;
+    const output = execSync(cmd, { encoding: 'utf8' });
     logI18n('validate_ok', { file: latest }, 'success');
-    console.log(output);
+    if (!OPTS.quiet && !OPTS.json) console.log(output);
+    emitJson({ ok: true, file: latest });
   } catch (err) {
     logI18n('validate_fail', { output: err.stdout || err.message }, 'error');
+    emitJson({ ok: false, file: latest, output: err.stdout || err.message });
   }
   closeRL();
 }
 
-// ─── Help ──────────────────────────────────────────────────────────────
-function printHelp() {
-  console.log('');
-  console.log(t('help_title', { version: VERSION }));
-  console.log(t('help_commands'));
-  console.log(t('help_structure'));
-  console.log(t('help_deps'));
-  console.log('');
+// ─── stats ────────────────────────────────────────────────────────────
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-// ─── Menu (fallback, numeric) ──────────────────────────────────────────
+function formatDuration(minutes) {
+  const h = Math.floor(minutes / 60);
+  const m = Math.round(minutes % 60);
+  if (h === 0) return `~${m}m`;
+  return `~${h}h ${m}m`;
+}
+
+function countWordsInFile(file) {
+  try {
+    const content = fs.readFileSync(file, 'utf8');
+    // Strip XML/HTML tags, then count words
+    const text = content.replace(/<[^>]+>/g, ' ').replace(/&\w+;/g, ' ');
+    const words = text.split(/\s+/).filter(w => w.length > 0);
+    return words.length;
+  } catch (_) { return 0; }
+}
+
+function dirSize(dir) {
+  let total = 0;
+  try {
+    const items = fs.readdirSync(dir, { withFileTypes: true });
+    for (const item of items) {
+      const full = path.join(dir, item.name);
+      try {
+        const st = fs.statSync(full);
+        if (st.isDirectory()) total += dirSize(full);
+        else if (st.isFile()) total += st.size;
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return total;
+}
+
+async function cmdStats(argv) {
+  const cwd = process.cwd();
+  const config = safeParseConfig();
+  if (!config) {
+    logI18n('stats_no_config', {}, 'error');
+    emitJson({ ok: false, error: 'no_config' });
+    closeRL();
+    return;
+  }
+
+  const type = (config.type || 'textbook').toLowerCase();
+  const epubDir = path.join(cwd, 'EPUB');
+  const result = { ok: true, type };
+
+  console.log('');
+  console.log(c.bold + t('stats_title', { dir: path.basename(cwd) }) + c.reset);
+  console.log(t('stats_type', { type }));
+
+  if (isComicType(type)) {
+    const direction = (config.reading_direction || defaultDirectionFor(type)).toUpperCase();
+    console.log(t('stats_direction', { direction }));
+
+    const pagesDir = path.join(epubDir, 'images', 'pages');
+    let pages = 0, chapters = 0;
+    const chapterSet = new Set();
+    let spreads = 0;
+
+    if (fs.existsSync(pagesDir)) {
+      const imgs = walkFilesRecursive(pagesDir, isImageFile);
+      pages = imgs.length;
+      for (const img of imgs) {
+        const rel = path.relative(pagesDir, img);
+        const parts = rel.split(/[\\/]/);
+        if (parts.length > 1) chapterSet.add(parts[0]);
+      }
+      // Spread detection
+      for (const img of imgs) {
+        const size = getImageSize(img) || getSvgSize(img);
+        if (size && size.height > 0 && size.width / size.height > 1.4) spreads++;
+      }
+    }
+    chapters = chapterSet.size;
+
+    console.log(t('stats_chapters', { count: chapters || '0 (flat)' }));
+    console.log(t('stats_pages', { count: pages }));
+    if (spreads > 0) console.log(`  Double spreads: ${spreads}`);
+
+    const imagesDir = path.join(epubDir, 'images');
+    let imgCount = 0, imgSize = 0;
+    if (fs.existsSync(imagesDir)) {
+      const allImgs = walkFilesRecursive(imagesDir, isImageFile);
+      imgCount = allImgs.length;
+      for (const f of allImgs) { try { imgSize += fs.statSync(f).size; } catch (_) {} }
+    }
+    console.log(t('stats_images', { count: imgCount, size: formatBytes(imgSize) }));
+
+    const audioDir = path.join(epubDir, 'audiovideo');
+    let audCount = 0, audSize = 0;
+    if (fs.existsSync(audioDir)) {
+      const files = walkFilesRecursive(audioDir, () => true);
+      audCount = files.length;
+      for (const f of files) { try { audSize += fs.statSync(f).size; } catch (_) {} }
+    }
+    if (audCount > 0) console.log(t('stats_audio', { count: audCount, size: formatBytes(audSize) }));
+
+    Object.assign(result, { pages, chapters, images: imgCount, audio: audCount });
+  } else {
+    // Textbook
+    let chapters = 0, words = 0;
+    if (fs.existsSync(epubDir)) {
+      const xhtmls = fs.readdirSync(epubDir).filter(f =>
+        f.endsWith('.xhtml') && !['cover.xhtml', 'toc.xhtml', 'nav.xhtml'].includes(f.toLowerCase())
+      );
+      chapters = xhtmls.length;
+      for (const f of xhtmls) words += countWordsInFile(path.join(epubDir, f));
+    }
+    const readMinutes = words / 260;
+
+    console.log(t('stats_chapters', { count: chapters }));
+    console.log(t('stats_words', { count: words.toLocaleString('en-US'), readtime: formatDuration(readMinutes) }));
+
+    const imagesDir = path.join(epubDir, 'images');
+    let imgCount = 0, imgSize = 0;
+    if (fs.existsSync(imagesDir)) {
+      for (const f of fs.readdirSync(imagesDir)) {
+        const full = path.join(imagesDir, f);
+        if (fs.statSync(full).isFile() && isImageFile(f)) {
+          imgCount++; try { imgSize += fs.statSync(full).size; } catch (_) {}
+        }
+      }
+    }
+    console.log(t('stats_images', { count: imgCount, size: formatBytes(imgSize) }));
+
+    const audioDir = path.join(epubDir, 'audiovideo');
+    let audCount = 0, audSize = 0;
+    if (fs.existsSync(audioDir)) {
+      for (const f of fs.readdirSync(audioDir)) {
+        const full = path.join(audioDir, f);
+        if (fs.statSync(full).isFile()) { audCount++; try { audSize += fs.statSync(full).size; } catch (_) {} }
+      }
+    }
+    if (audCount > 0) console.log(t('stats_audio', { count: audCount, size: formatBytes(audSize) }));
+
+    Object.assign(result, { chapters, words, images: imgCount, audio: audCount });
+  }
+
+  // Last build
+  const buildsDir = path.join(cwd, 'builds');
+  if (fs.existsSync(buildsDir)) {
+    const builds = fs.readdirSync(buildsDir).filter(f => f.endsWith('.epub'));
+    if (builds.length > 0) {
+      const sorted = builds.map(f => {
+        const full = path.join(buildsDir, f);
+        try { return { f, mtime: fs.statSync(full).mtime, size: fs.statSync(full).size }; }
+        catch (_) { return null; }
+      }).filter(Boolean).sort((a, b) => b.mtime - a.mtime);
+      if (sorted.length > 0) {
+        const b = sorted[0];
+        const dateStr = b.mtime.toISOString().slice(0, 10);
+        console.log(t('stats_last_build', {
+          file: b.f, size: formatBytes(b.size), date: dateStr,
+        }));
+        result.lastBuild = { file: b.f, size: b.size, date: dateStr };
+      }
+    } else {
+      console.log(t('stats_no_build'));
+    }
+  } else {
+    console.log(t('stats_no_build'));
+  }
+  console.log('');
+
+  emitJson(result);
+  closeRL();
+}
+
+// ─── preview ──────────────────────────────────────────────────────────
+const PREVIEW_HTML = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>EPUB Preview</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%;font-family:system-ui,-apple-system,sans-serif;background:#1a1a1a;color:#eee}
+#toolbar{height:44px;display:flex;align-items:center;gap:8px;padding:0 12px;background:#252525;border-bottom:1px solid #333}
+#viewer{height:calc(100% - 44px);position:relative}
+button{background:#3a3a3a;color:#eee;border:1px solid #444;border-radius:4px;padding:6px 12px;cursor:pointer;font-size:13px}
+button:hover{background:#4a4a4a}
+button:disabled{opacity:.4;cursor:default}
+#title{flex:1;font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#loc{font-size:12px;color:#888}
+#toc{position:absolute;top:0;left:0;bottom:0;width:280px;background:#252525;overflow-y:auto;transform:translateX(-100%);transition:transform .2s;z-index:100;border-right:1px solid #333}
+#toc.open{transform:translateX(0)}
+#toc ul{list-style:none;padding:8px;margin:0}
+#toc li{padding:6px 8px;cursor:pointer;border-radius:4px;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#toc li:hover{background:#3a3a3a}
+#error{padding:20px;color:#f88;line-height:1.5}
+</style>
+</head>
+<body>
+<div id="toolbar">
+<button id="tocBtn">TOC</button>
+<button id="prevBtn">Prev</button>
+<button id="nextBtn">Next</button>
+<span id="title">Loading...</span>
+<span id="loc"></span>
+</div>
+<div id="toc"><ul id="tocList"></ul></div>
+<div id="viewer"></div>
+<div id="error" style="display:none"></div>
+<script src="/assets/epub.min.js"></script>
+<script>
+var book, rendition;
+function showError(msg){
+  document.getElementById('error').style.display='block';
+  document.getElementById('error').textContent=msg;
+}
+function init() {
+  if (typeof ePub === 'undefined') {
+    showError('epub.js failed to load. Run "node epubcreator.js update config" to fetch preview assets.');
+    return;
+  }
+  try {
+    book = ePub('/book.epub');
+    rendition = book.renderTo('viewer', {width:'100%',height:'100%',spread:'auto'});
+    rendition.display();
+    book.loaded.metadata.then(function(m){
+      document.getElementById('title').textContent = m.title || 'Untitled';
+    }).catch(function(){});
+    book.loaded.navigation.then(function(nav){
+      var list = document.getElementById('tocList');
+      function add(items, depth){
+        items.forEach(function(it){
+          var li = document.createElement('li');
+          li.textContent = (it.label || '').trim() || '(untitled)';
+          li.style.paddingLeft = (8 + depth*12) + 'px';
+          li.onclick = function(){
+            rendition.display(it.href);
+            document.getElementById('toc').classList.remove('open');
+          };
+          list.appendChild(li);
+          if (it.subitems && it.subitems.length) add(it.subitems, depth+1);
+        });
+      }
+      add(nav.toc || [], 0);
+    }).catch(function(){});
+    rendition.on('relocated', function(loc){
+      var pct = loc.start.percentage || 0;
+      document.getElementById('loc').textContent = (pct*100).toFixed(1) + '%';
+      if (loc.start.cfi) try { localStorage.setItem('epub-pos', loc.start.cfi); } catch(e){}
+    });
+    var saved = null;
+    try { saved = localStorage.getItem('epub-pos'); } catch(e){}
+    if (saved) rendition.display(saved);
+  } catch (err) {
+    showError('Error loading EPUB: ' + err.message);
+  }
+}
+document.getElementById('tocBtn').onclick = function(){
+  document.getElementById('toc').classList.toggle('open');
+};
+document.getElementById('prevBtn').onclick = function(){ rendition && rendition.prev(); };
+document.getElementById('nextBtn').onclick = function(){ rendition && rendition.next(); };
+document.addEventListener('keydown', function(e){
+  if (e.key === 'ArrowLeft') rendition && rendition.prev();
+  if (e.key === 'ArrowRight') rendition && rendition.next();
+});
+try {
+  var es = new EventSource('/reload');
+  es.onmessage = function(e){
+    if (e.data === 'rebuild') {
+      if (rendition) { try { rendition.destroy(); } catch(x){} }
+      document.getElementById('tocList').innerHTML = '';
+      document.getElementById('error').style.display = 'none';
+      setTimeout(init, 100);
+    }
+  };
+} catch(e){}
+init();
+</script>
+</body>
+</html>`;
+
+function findEpubJsPath() {
+  const candidates = [
+    path.join(process.cwd(), TOOL_DIR, 'preview', 'epub.min.js'),
+    path.join(process.cwd(), TOOL_DIR, 'preview', 'epub.js'),
+    path.join(process.cwd(), 'node_modules', 'epubjs', 'dist', 'epub.min.js'),
+    path.join(process.cwd(), 'node_modules', 'epubjs', 'dist', 'epub.js'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+async function cmdPreview(argv) {
+  let port = 8080;
+  let host = '127.0.0.1';
+  let watch = false;
+  let shouldOpen = true;
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--watch' || arg === '-w') watch = true;
+    else if (arg === '--no-open') shouldOpen = false;
+    else if (arg === '--port' && i + 1 < argv.length) { port = parseInt(argv[i+1]); i++; }
+    else if (arg.startsWith('--port=')) { port = parseInt(arg.slice(7)); }
+    else if (arg === '--host' && i + 1 < argv.length) { host = argv[i+1]; i++; }
+    else if (arg.startsWith('--host=')) { host = arg.slice(7); }
+  }
+
+  const cwd = process.cwd();
+  const buildsDir = path.join(cwd, 'builds');
+  if (!fs.existsSync(buildsDir)) {
+    logI18n('preview_no_epub', {}, 'error');
+    closeRL();
+    return;
+  }
+  let files = fs.readdirSync(buildsDir).filter(f => f.endsWith('.epub'));
+  if (files.length === 0) {
+    logI18n('preview_no_epub', {}, 'error');
+    closeRL();
+    return;
+  }
+
+  const epubPath = path.join(buildsDir, files.sort().pop());
+  const epubJsPath = findEpubJsPath();
+
+  if (!epubJsPath) {
+    logI18n('preview_no_epubjs', {}, 'warn');
+  }
+
+  // SSE reload clients
+  const sseClients = new Set();
+
+  const server = http.createServer((req, res) => {
+    const url = req.url.split('?')[0];
+
+    if (url === '/' || url === '/index.html') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(PREVIEW_HTML);
+      return;
+    }
+
+    if (url === '/book.epub') {
+      try {
+        const stat = fs.statSync(epubPath);
+        res.writeHead(200, {
+          'Content-Type': 'application/epub+zip',
+          'Content-Length': stat.size,
+          'Cache-Control': 'no-cache',
+        });
+        const stream = fs.createReadStream(epubPath);
+        stream.pipe(res);
+        stream.on('error', () => { try { res.end(); } catch(_){} });
+      } catch (err) {
+        res.writeHead(500);
+        res.end('Error reading EPUB: ' + err.message);
+      }
+      return;
+    }
+
+    if (url === '/assets/epub.min.js' || url === '/assets/epub.js') {
+      if (!epubJsPath) {
+        res.writeHead(404, { 'Content-Type': 'text/javascript' });
+        res.end('// epub.js not found');
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
+      fs.createReadStream(epubJsPath).pipe(res);
+      return;
+    }
+
+    if (url === '/reload') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      });
+      res.write('retry: 2000\n\n');
+      sseClients.add(res);
+      req.on('close', () => sseClients.delete(res));
+      return;
+    }
+
+    res.writeHead(404);
+    res.end('Not found');
+  });
+
+  return new Promise((resolve) => {
+    server.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        logI18n('preview_port_in_use', { port }, 'error');
+      } else {
+        log(`Server error: ${err.message}`, 'error');
+      }
+      resolve();
+    });
+
+    server.listen(port, host, () => {
+      const displayHost = host === '0.0.0.0' ? '127.0.0.1' : host;
+      logI18n('preview_start', { host: displayHost, port }, 'success');
+      if (host === '0.0.0.0') log(`Also reachable from LAN devices at http://<your-ip>:${port}/`, 'info');
+
+      if (shouldOpen && !OPTS.quiet && !OPTS.json) {
+        if (isTermux) {
+          try {
+            logI18n('preview_termux_open', {}, 'info');
+            execSync(`termux-open-url "http://${displayHost}:${port}/"`, { stdio: 'ignore' });
+          } catch (_) {
+            logI18n('preview_open_hint', { host: displayHost, port }, 'info');
+          }
+        } else {
+          logI18n('preview_open_hint', { host: displayHost, port }, 'info');
+        }
+      }
+
+      const stopServer = () => {
+        try { server.close(); } catch (_) {}
+        for (const res of sseClients) { try { res.end(); } catch (_) {} }
+        sseClients.clear();
+        if (_activeDebugStop === stopServer) _activeDebugStop = null;
+        logI18n('preview_stopped', {}, 'info');
+        resolve();
+      };
+      _activeDebugStop = stopServer;
+
+      if (watch) {
+        logI18n('preview_watching', {}, 'info');
+        const settings = loadSettings();
+        const debounceDelay = parseInt(settings.watch_delay) || 500;
+        const cfg = safeParseConfig();
+        const type = (cfg && cfg.type) ? cfg.type.toLowerCase() : 'textbook';
+
+        const rebuild = async () => {
+          try {
+            const archiver = require('archiver');
+            if (isComicType(type)) {
+              await buildEpub(archiver);
+            } else {
+              const marked = require('marked');
+              await convertAllMd(path.join(cwd, 'Markdowns'), path.join(cwd, 'EPUB'), true, marked);
+              await buildEpub(archiver);
+            }
+            logI18n('preview_rebuilt', {}, 'success');
+            for (const res of sseClients) {
+              try { res.write('data: rebuild\n\n'); } catch (_) {}
+            }
+          } catch (err) {
+            log(`Rebuild failed: ${err.message}`, 'error');
+          }
+        };
+
+        let timer = null;
+        const trigger = () => {
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(rebuild, debounceDelay);
+        };
+
+        const watchDir = isComicType(type)
+          ? path.join(cwd, 'EPUB', 'images', 'pages')
+          : path.join(cwd, 'Markdowns');
+
+        let watcher = null;
+        try {
+          if (fs.existsSync(watchDir)) {
+            watcher = fs.watch(watchDir, { recursive: true }, () => trigger());
+          }
+        } catch (_) {
+          if (fs.existsSync(watchDir)) {
+            try { watcher = fs.watch(watchDir, () => trigger()); } catch (_) {}
+          }
+        }
+
+        const oldStop = stopServer;
+        const newStop = () => {
+          if (timer) clearTimeout(timer);
+          if (watcher) { try { watcher.close(); } catch (_) {} }
+          oldStop();
+        };
+        _activeDebugStop = newStop;
+      }
+
+      // Handle Ctrl+C
+      const sigHandler = () => {
+        if (_activeDebugStop) _activeDebugStop();
+        else stopServer();
+      };
+      process.once('SIGINT', sigHandler);
+    });
+  });
+}
+
+// ─── help & menu ──────────────────────────────────────────────────────
+function printHelp() {
+  const helpText = `
+epubcreator - CLI for compiling directory to EPUB  (v${VERSION})
+
+Usage:
+  node epubcreator.js [command] [subcommand] [options]
+
+  (no args)
+    Open interactive menu.
+
+  createdir [textbook|comic|manga]
+    Create directory structure. Interactive prompt when type is omitted.
+    textbook     Default, reflowable book
+    comic        LTR fixed-layout comic
+    manga        RTL fixed-layout manga
+
+  convertch [subcommand] [path] [options]
+  conv         Alias for convertch.
+    md2xhtml     (default)   Convert .md to .xhtml, reads Markdowns/
+    xhtml2md                 Convert .xhtml to .md
+    docx2md                  Convert .docx to .md, split by heading ##
+    img2xhtml                Generate .xhtml from images, comic/manga mode
+
+    Options for convertch / xhtml2md / docx2md:
+      --force, -f            Overwrite existing files
+      --all                  Force overwrite all (convertch md2xhtml only)
+      --output <path>        (docx2md, split, merge only) Output path
+
+    Options for img2xhtml:
+      --force, -f            Regenerate all XHTML
+      --regen-ord            Regenerate ord.txt (asks confirmation)
+      --fit=<mode>           contain | cover | width | height | none
+
+  split <path> [--output dir] [--force]
+    Split .md file by heading ##.
+
+  merge <path> [--output file] [--force]
+    Merge .md files into one (reverse of split).
+
+  build
+    Build EPUB from current directory.
+
+  debug
+    Watch changes, auto convert and build.
+
+  import [--force] [--output dir]
+    Import .epub file from current directory.
+
+  stats
+    Show statistics for the current book (chapters, words, pages, size).
+
+  preview [--port 8080] [--host 127.0.0.1] [--watch] [--no-open]
+    Start local HTTP server to preview the built EPUB in a browser.
+    --watch rebuilds automatically when source files change.
+    --host 0.0.0.0 makes it reachable from other devices on your LAN.
+
+  update <module|config> [--force]
+    module                   Download/update node_modules from repository
+    config                   Download/update .epubcreator from config branch
+
+  settings
+    Interactive tool settings.
+
+  validate
+    Validate latest EPUB in builds/ with epubcheck.
+
+  help, --help
+    Show this help.
+
+  --version, -v
+    Show version.
+
+Global flags (available for any command):
+  --quiet, -q      Only show errors
+  --verbose        Show additional detail
+  --json           Emit JSON result to stdout (suppresses non-error logs)
+  --dry-run, -n    Show what would be done without writing files
+
+Directory structure (textbook):
+  ./
+  |-- config.txt          <- book metadata (required), type: textbook
+  |-- ord.txt             <- chapter order list (optional)
+  |-- Docs/               <- source .docx files (for docx2md)
+  |-- Markdowns/          <- source .md files (for convertch)
+  |-- EPUB/
+  |   |-- images/
+  |   |   |-- cover.png   <- REQUIRED
+  |   |-- audiovideo/     <- optional
+  |   |-- bab1.xhtml      <- chapters (any name, in EPUB/ root)
+  |-- builds/
+      |-- [folder-name].epub
+
+Directory structure (comic/manga):
+  ./
+  |-- config.txt          <- type: comic | manga, reading_direction: ltr | rtl
+  |-- ord.txt             <- optional: ordered list with * / ! / | alt
+  |-- EPUB/
+  |   |-- images/
+  |   |   |-- cover.jpg   <- REQUIRED
+  |   |   |-- pages/
+  |   |       |-- ch1/    <- optional chapter grouping
+  |   |       |   |-- 0001.jpg
+  |   |       |   |-- 0002.jpg
+  |   |       |-- ch2/
+  |   |           |-- 0001.jpg
+  |   |-- xhtmls/         <- auto-generated by "convertch img2xhtml"
+  |   |-- styles/         <- optional custom CSS
+  |   |-- about.xhtml     <- back-matter (reflowable) optional
+  |   |-- audiovideo/     <- optional
+  |-- builds/
+      |-- [folder-name].epub
+
+Note: make sure main dependencies are installed:
+  npm install archiver@5.3.0 marked@4.0.0 turndown@7.2.4 sanitize-html
+For DOCX feature:  npm install mammoth@1.6.0 (optional)
+For import feature: npm install adm-zip@0.5.10 xml2js@0.5.0 (optional)
+For preview: npm install epubjs (optional) OR update config to fetch bundled epub.min.js
+For validation: install epubcheck (https://github.com/w3c/epubcheck)
+  Or run "node epubcreator.js update module" to download automatically.
+
+Termux notes:
+  - pkg install nodejs-lts tar openjdk-17
+  - Recursive fs.watch is not supported on Android; debug mode watches top-level dir only.
+  - preview: browser opens via termux-open-url; access http://127.0.0.1:<port>/
+`;
+  console.log(helpText);
+}
+
 function printMenu() {
   const line = c.gray + '-'.repeat(52) + c.reset;
   console.log('');
@@ -4637,6 +5055,8 @@ function printMenu() {
   console.log(`    ${c.bold}b${c.reset}  Build EPUB`);
   console.log(`    ${c.bold}d${c.reset}  Debug (auto-rebuild)`);
   console.log(`    ${c.bold}v${c.reset}  Validate`);
+  console.log(`    ${c.bold}p${c.reset}  Preview (browser)`);
+  console.log(`    ${c.bold}t${c.reset}  Stats`);
   console.log(`    ${c.bold}i${c.reset}  Import EPUB`);
   console.log(`    ${c.bold}s${c.reset}  Settings`);
   console.log(`    ${c.bold}u${c.reset}  Update (module / config)`);
@@ -4658,18 +5078,18 @@ async function handleMenuChoice(choice, deps) {
     case '7': await cmdImg2Xhtml([]); break;
     case '8': {
       const p = await question(`  ${c.gray}Path to .md file or directory [Markdowns]:${c.reset} `);
-      const target = (p || '').trim() || 'Markdowns';
-      await cmdSplit([target]);
+      await cmdSplit([(p || '').trim() || 'Markdowns']);
       break;
     }
     case '9': {
       const p = await question(`  ${c.gray}Path to .md file or directory [Markdowns]:${c.reset} `);
-      const target = (p || '').trim() || 'Markdowns';
-      await cmdMerge([target]);
+      await cmdMerge([(p || '').trim() || 'Markdowns']);
       break;
     }
     case 'b': await cmdBuild(archiver); break;
     case 'v': await cmdValidate(); break;
+    case 'p': await cmdPreview([]); break;
+    case 't': await cmdStats([]); break;
     case 'i': await cmdImport([]); break;
     case 's': await cmdSettings(); break;
     case 'u': {
@@ -4686,12 +5106,10 @@ async function handleMenuChoice(choice, deps) {
   }
 }
 
-// ─── Fallback debug runner ─────────────────────────────────────────────
 async function runDebugFallback(deps) {
   try { rl.close(); } catch (_) {}
   try { process.stdin.setRawMode(true); } catch (_) {}
   process.stdin.resume();
-
   console.log('');
   log(`Debug mode active. Press ${c.bold}q${c.reset} to stop, Ctrl+C to exit.`, 'info');
   console.log('');
@@ -4705,7 +5123,6 @@ async function runDebugFallback(deps) {
       } else if (str.includes('\x03')) {
         process.stdin.removeListener('data', handler);
         if (_activeDebugStop) _activeDebugStop();
-        // eslint-disable-next-line no-process-exit
         process.exit(0);
       }
     };
@@ -4713,7 +5130,6 @@ async function runDebugFallback(deps) {
   });
 
   const debugPromise = cmdDebug(deps.archiver, deps.marked);
-
   await Promise.race([
     debugPromise,
     stopKeyPromise.then(() => {
@@ -4721,62 +5137,70 @@ async function runDebugFallback(deps) {
       return debugPromise;
     }),
   ]);
-
   try { process.stdin.setRawMode(false); } catch (_) {}
   rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 }
 
-// ─── Fallback menu (numeric input) ─────────────────────────────────────
 async function runMenuFallback(deps) {
   while (true) {
     printMenu();
     const answer = await question(`  ${c.cyan}>${c.reset} `);
     const choice = (answer || '').trim().toLowerCase();
-
     if (!choice) continue;
     if (choice === 'q' || choice === 'quit' || choice === 'exit') {
       console.log(`\n  ${c.gray}Bye.${c.reset}\n`);
       return;
     }
-
     console.log('');
     try {
-      if (choice === 'd') {
-        await runDebugFallback(deps);
-      } else {
-        await handleMenuChoice(choice, deps);
-      }
+      if (choice === 'd') await runDebugFallback(deps);
+      else await handleMenuChoice(choice, deps);
     } catch (err) {
       log(`Error: ${err.message}`, 'error');
     }
-
     console.log('');
     await pauseBeforeMenu(3);
   }
 }
 
-// ─── TUI menu (arrow keys, full-screen) ────────────────────────────────
 async function runMenuTUI(deps) {
   TUI.init(deps);
-
   if (!TUI.enter()) {
     try { rl.close(); } catch (_) {}
     rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     return await runMenuFallback(deps);
   }
-
   await new Promise(resolve => { TUI.onExit = resolve; });
 }
 
-// ─── Main ──────────────────────────────────────────────────────────────
+// ─── Main ─────────────────────────────────────────────────────────────
+function parseGlobalFlags(args) {
+  const filtered = [];
+  for (const arg of args) {
+    if (arg === '--quiet' || arg === '-q') OPTS.quiet = true;
+    else if (arg === '--verbose') OPTS.verbose = true;
+    else if (arg === '--json') { OPTS.json = true; OPTS.quiet = true; }
+    else if (arg === '--dry-run' || arg === '-n') OPTS.dryRun = true;
+    else filtered.push(arg);
+  }
+  return filtered;
+}
+
+async function cmdBuild(archiver) {
+  await buildEpub(archiver);
+  closeRL();
+}
+
 async function main() {
   loadSettings();
 
-  const args = process.argv.slice(2);
+  const rawArgs = process.argv.slice(2);
+  const args = parseGlobalFlags(rawArgs);
   const command = args[0];
 
   if (command === '--version' || command === '-v') {
-    console.log(`epubcreator v${VERSION}`);
+    if (OPTS.json) emitJson({ version: VERSION });
+    else console.log(`epubcreator v${VERSION}`);
     try { rl.close(); } catch (_) {}
     return;
   }
@@ -4786,43 +5210,34 @@ async function main() {
     return;
   }
 
-  // ─── Tanpa argumen → menu interaktif (auto-fix deps) ──────────────
   if (!command) {
     interactiveMode = true;
-
     let result = tryCheckDependencies();
     if (!result.ok) {
+      if (OPTS.json || OPTS.quiet) {
+        printMissingDeps(result.missing);
+        process.exit(1);
+      }
       log('Dependencies missing. Downloading pre-built node_modules...', 'info');
       const ok = await doUpdateModule(false);
-      if (!ok) {
-        printMissingDeps(result.missing);
-        process.exit(1);
-      }
+      if (!ok) { printMissingDeps(result.missing); process.exit(1); }
       result = tryCheckDependencies();
-      if (!result.ok) {
-        printMissingDeps(result.missing);
-        process.exit(1);
-      }
+      if (!result.ok) { printMissingDeps(result.missing); process.exit(1); }
     }
 
     const deps = result.deps;
     TUI.cols = process.stdout.columns || 80;
     TUI.rows = process.stdout.rows || 24;
 
-    if (TUI.canUse()) {
-      await runMenuTUI(deps);
-    } else {
+    if (TUI.canUse()) await runMenuTUI(deps);
+    else {
       await runMenuFallback(deps);
       try { rl.close(); } catch (_) {}
     }
     return;
   }
 
-  // ─── Perintah tanpa dependensi (non-interaktif) ──────────────────
-  if (command === 'createdir') {
-    await cmdCreateDir(args.slice(1));
-    return;
-  }
+  if (command === 'createdir') { await cmdCreateDir(args.slice(1)); return; }
   if (command === 'update') {
     const sub = args[1];
     const force = args.includes('--force') || args.includes('-f');
@@ -4839,39 +5254,27 @@ async function main() {
     try { rl.close(); } catch (_) {}
     return;
   }
-  if (command === 'import') {
-    await cmdImport(args.slice(1));
-    return;
-  }
-  if (command === 'settings') {
-    await cmdSettings();
-    return;
-  }
-  if (command === 'validate') {
-    await cmdValidate();
-    return;
-  }
+  if (command === 'import') { await cmdImport(args.slice(1)); return; }
+  if (command === 'settings') { await cmdSettings(); return; }
+  if (command === 'validate') { await cmdValidate(); return; }
+  if (command === 'stats') { await cmdStats(args.slice(1)); return; }
+  if (command === 'preview') { await cmdPreview(args.slice(1)); return; }
 
-  // ─── Perintah dengan dependensi ──────────────────────────────────
   const depResult = tryCheckDependencies();
-  if (!depResult.ok) {
-    printMissingDeps(depResult.missing);
-    process.exit(1);
-  }
+  if (!depResult.ok) { printMissingDeps(depResult.missing); process.exit(1); }
   const { archiver, marked, TurndownService } = depResult.deps;
 
   if (command === 'convertch' || command === 'conv') {
     const sub = args[1] || 'md2xhtml';
     const rest = args.slice(2);
 
-    if (sub === 'img2xhtml') {
-      await cmdImg2Xhtml(rest);
-      return;
-    }
+    if (sub === 'img2xhtml') { await cmdImg2Xhtml(rest); return; }
+
     if (sub === 'md2xhtml' || (sub !== 'xhtml2md' && sub !== 'docx2md')) {
       const argPath = (sub === 'md2xhtml') ? rest[0] : args[1];
       const force = rest.includes('--force') || rest.includes('-f');
-      await cmdConvertCh(argPath, force, marked);
+      const forceAll = rest.includes('--all');
+      await cmdConvertCh(argPath, force, marked, forceAll);
     } else if (sub === 'xhtml2md') {
       await cmdConvertX(rest[0], TurndownService);
     } else if (sub === 'docx2md') {
@@ -4884,44 +5287,17 @@ async function main() {
     return;
   }
 
-  if (command === 'convertchx') {
-    await cmdConvertX(args[1], TurndownService);
-    return;
-  }
+  if (command === 'convertchx') { await cmdConvertX(args[1], TurndownService); return; }
+  if (command === 'split') { await cmdSplit(args.slice(1)); return; }
+  if (command === 'merge') { await cmdMerge(args.slice(1)); return; }
+  if (command === 'build') { await cmdBuild(archiver); return; }
+  if (command === 'debug') { await cmdDebug(archiver, marked); return; }
 
-  if (command === 'split') {
-    await cmdSplit(args.slice(1));
-    return;
-  }
-
-  if (command === 'merge') {
-    await cmdMerge(args.slice(1));
-    return;
-  }
-
-  if (command === 'build') {
-    await cmdBuild(archiver);
-    return;
-  }
-
-  if (command === 'debug') {
-    await cmdDebug(archiver, marked);
-    return;
-  }
-
-  // Unknown command → print suggestion
   logI18n('unknown_command', { cmd: command }, 'error');
   const suggestion = suggestCommand(command);
-  if (suggestion) {
-    log(t('maybe_you_mean', { suggestion: `node epubcreator.js ${suggestion}` }), 'info');
-  }
+  if (suggestion) log(t('maybe_you_mean', { suggestion: `node epubcreator.js ${suggestion}` }), 'info');
   logI18n('usage_hint', {}, 'info');
   try { rl.close(); } catch (_) {}
-}
-
-async function cmdBuild(archiver) {
-  await buildEpub(archiver);
-  closeRL();
 }
 
 main().catch((err) => {
